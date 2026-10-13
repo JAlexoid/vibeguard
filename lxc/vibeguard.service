@@ -1,0 +1,11 @@
+[Unit]
+Description=VibeGuard WireGuard management UI
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/vibeguard.env
+ExecStart=/usr/local/bin/vibeguard
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
