@@ -61,8 +61,14 @@ func (r Runner) Active(name string) bool {
 	return exec.Command("wg", "show", name).Run() == nil
 }
 
-func (r Runner) Start(name string) error { return run("wg-quick", "up", r.confPath(name)) }
-func (r Runner) Stop(name string) error  { return run("wg-quick", "down", r.confPath(name)) }
+func (r Runner) Start(name string) error {
+	if err := run("wg-quick", "up", r.confPath(name)); err != nil {
+		return err
+	}
+	// WireGuard interfaces lack the MULTICAST flag by default; needed for the mDNS reflector.
+	return run("ip", "link", "set", "dev", name, "multicast", "on")
+}
+func (r Runner) Stop(name string) error { return run("wg-quick", "down", r.confPath(name)) }
 
 // Sync pushes peer changes into a running interface without dropping it.
 func (r Runner) Sync(name string) error {

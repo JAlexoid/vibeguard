@@ -23,7 +23,7 @@ sleep 5
 printf 'VIBEGUARD_ADMIN_PASSWORD=%s\n' "$PASSWORD" | pct exec "$CTID" -- bash -c 'umask 077; cat > /etc/vibeguard.env'
 pct exec "$CTID" -- bash -c "
 set -e
-apt-get update && apt-get install -y wireguard-tools iptables golang-go git ca-certificates openresolv
+apt-get update && apt-get install -y wireguard-tools iptables golang-go git ca-certificates openresolv iproute2
 git clone $REPO /opt/vibeguard-src
 cd /opt/vibeguard-src && go build -o /usr/local/bin/vibeguard .
 mkdir -p /var/lib/vibeguard

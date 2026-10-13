@@ -243,6 +243,9 @@ func main() {
 			log.Printf("write %s: %v", v.Name, err)
 		}
 	}
+	if up := os.Getenv("VIBEGUARD_MDNS_UPSTREAM"); up != "" {
+		go func() { log.Printf("mdns reflector stopped: %v", NewReflector(up, st).Run()) }()
+	}
 	addr := env("VIBEGUARD_LISTEN", ":8080")
 	log.Printf("vibeguard listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, srv.Handler()))
