@@ -1,0 +1,19 @@
+services:
+  vibeguard:
+    build: .
+    # For the mDNS repeater use host networking and set VIBEGUARD_MDNS_UPSTREAM=<lan iface>
+    restart: unless-stopped
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    ports:
+      - "8080:8080"
+      - "51820:51820/udp"
+    environment:
+      VIBEGUARD_ADMIN_PASSWORD: change-me
+    volumes:
+      - vibeguard-data:/var/lib/vibeguard
+      - wireguard-conf:/etc/wireguard
+volumes:
+  vibeguard-data:
+  wireguard-conf:
