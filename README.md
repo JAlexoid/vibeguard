@@ -4,7 +4,8 @@ Simple WireGuard management UI: manage WireGuard services (interfaces), users (p
 generate QR codes for easy client setup. Single admin password, no other accounts.
 
 Stack: one Go binary (standard library + `go-qrcode`) serving a REST API and a small
-dependency-free HTML/JS frontend (embedded). Uses `wg` / `wg-quick` on the host.
+dependency-free HTML/JS frontend (embedded). Uses `wg` and `ip` on the host (no `wg-quick`), so it
+doesn't need root, only the `CAP_NET_ADMIN` capability.
 
 ## Configuration (environment variables)
 
@@ -13,7 +14,7 @@ dependency-free HTML/JS frontend (embedded). Uses `wg` / `wg-quick` on the host.
 | `VIBEGUARD_ADMIN_PASSWORD` | required | Admin password |
 | `VIBEGUARD_LISTEN` | `:8080` | Listen address |
 | `VIBEGUARD_DATA` | `/var/lib/vibeguard/data.json` | State file (contains keys, keep private) |
-| `VIBEGUARD_WG_DIR` | `/etc/wireguard` | Where `<name>.conf` files are written |
+| `VIBEGUARD_WG_DIR` | `/etc/wireguard` | Where `<name>.conf` files are written (the systemd unit sets `/var/lib/vibeguard/wireguard`) |
 | `VIBEGUARD_MDNS_UPSTREAM` | unset (disabled) | Upstream/LAN interface (e.g. `eth0`). Enables the mDNS repeater |
 
 Put the UI behind HTTPS (e.g. a reverse proxy) when exposing it beyond a trusted network.
@@ -30,7 +31,7 @@ Requires `NET_ADMIN` and host networking (`network_mode: host` in Docker) so the
 
 ## Run
 
-    VIBEGUARD_ADMIN_PASSWORD=secret go run .      # needs root + wireguard-tools to start services
+    VIBEGUARD_ADMIN_PASSWORD=secret go run .      # needs root (or CAP_NET_ADMIN) + wireguard-tools to start services
 
 ## Docker
 
@@ -53,6 +54,18 @@ Run `make help` for the full list.
 to `/etc/systemd/system`. It also writes `/etc/vibeguard.env` with a random admin password if that
 file doesn't exist yet, enables `net.ipv4.ip_forward`, and runs `systemctl enable --now vibeguard`.
 Install `wireguard-tools` on the host first. If `DESTDIR` is set, only the files are staged.
+
+**Service user.** `make install` asks which user to run as (default `vibeguard`) and creates it as a
+system user if it doesn't exist. To skip the prompt, e.g. in scripts, pass `VIBEGUARD_USER=<name>`;
+without a terminal it uses the default. The service doesn't need root: the unit grants only
+`CAP_NET_ADMIN`, to manage WireGuard interfaces, and `CAP_NET_BIND_SERVICE`, so `VIBEGUARD_LISTEN`
+can use a port below 1024. It also sets `NoNewPrivileges`. systemd creates `/var/lib/vibeguard` and
+makes the user its owner (`StateDirectory=`); service configs are written to
+`/var/lib/vibeguard/wireguard`. `/etc/vibeguard.env` stays owned by root, since systemd reads it
+before dropping privileges.
+
+    sudo make install                          # prompts, default: vibeguard
+    sudo make install VIBEGUARD_USER=wgadmin   # no prompt
 
 ## LXC (Proxmox)
 
@@ -136,7 +149,7 @@ service needs its own UDP port forwarded. Keep port `8080` on the LAN only, or p
 reverse proxy.
 
 **Updating:** build a new template, then recreate the container while keeping state. Back up
-`/var/lib/vibeguard`, `/etc/wireguard` and `/etc/vibeguard.env` first, for example with
+`/var/lib/vibeguard` and `/etc/vibeguard.env` first, for example with
 `vzdump 120` or `pct pull`. Alternatively, copy a freshly built `vibeguard` binary in and restart:
 
     make && scp vibeguard root@pve.lan:/tmp/
@@ -195,7 +208,7 @@ Creates a Debian 12 container with TUN access, builds VibeGuard and installs the
 An unprivileged container shares the host kernel and can't load kernel modules or create device
 nodes, so a few things must be set up on the host.
 
-**1. WireGuard kernel module (host).** `wg-quick` first tries to create a kernel interface
+**1. WireGuard kernel module (host).** VibeGuard first tries to create a kernel interface
 (`ip link add <name> type wireguard`). That works inside an unprivileged container, because the
 container is root in its own network namespace, but only if the host already has the module loaded.
 Proxmox VE kernels include WireGuard; make sure the module loads at boot:
@@ -203,8 +216,8 @@ Proxmox VE kernels include WireGuard; make sure the module loads at boot:
     echo wireguard > /etc/modules-load.d/wireguard.conf
     modprobe wireguard
 
-**2. `/dev/net/tun` (container config).** If the kernel interface can't be created, `wg-quick` falls
-back to a userspace implementation (e.g. `wireguard-go`), which needs the TUN device (character
+**2. `/dev/net/tun` (container config).** If the kernel interface can't be created, VibeGuard falls
+back to `wireguard-go` when it's installed. wireguard-go needs the TUN device (character
 device major 10, minor 200). Unprivileged containers have no access to it by default, so allow the
 device in the container's cgroup and bind-mount the host node into the container. Add to
 `/etc/pve/lxc/<CTID>.conf`:

@@ -17,6 +17,8 @@ UNITDIR  ?= /etc/systemd/system
 ENV_FILE := /etc/vibeguard.env
 DATA_DIR := /var/lib/vibeguard
 SYSCTL   := /etc/sysctl.d/99-vibeguard.conf
+# Service user; prompted for by `make install` when unset (default: vibeguard).
+VIBEGUARD_USER ?=
 
 # LXC template (Proxmox vztmpl-compatible rootfs tarball).
 LXC_ARCH  ?= amd64
@@ -51,7 +53,7 @@ vet: ## Run go vet
 fmt: ## Format Go sources
 	gofmt -w $(wildcard *.go)
 
-run: ## Run locally (needs root and VIBEGUARD_ADMIN_PASSWORD)
+run: ## Run locally (needs CAP_NET_ADMIN/root and VIBEGUARD_ADMIN_PASSWORD)
 	$(GO) run .
 
 clean: ## Remove build outputs
@@ -62,9 +64,19 @@ clean: ## Remove build outputs
 install: $(BINARY) ## Install binary + systemd unit and start it (run as root)
 	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/vibeguard
 	@mkdir -p $(DIST)
-	sed 's|/usr/local/bin/vibeguard|$(BINDIR)/vibeguard|' lxc/vibeguard.service > $(DIST)/vibeguard.service
+	@user='$(VIBEGUARD_USER)'; \
+	if [ -z "$$user" ] && [ -t 0 ]; then printf 'Run VibeGuard as user [vibeguard]: '; read -r user; fi; \
+	user=$${user:-vibeguard}; \
+	case "$$user" in ''|-*|*[!a-z0-9_-]*) echo "invalid user name: $$user" >&2; exit 1;; esac; \
+	if [ -z "$(DESTDIR)" ] && ! id -u "$$user" >/dev/null 2>&1; then \
+	  echo "Creating system user $$user"; \
+	  useradd --system --user-group --home-dir $(DATA_DIR) --no-create-home \
+	    --shell "$$(command -v nologin || echo /bin/false)" "$$user" || exit 1; \
+	fi; \
+	echo "Service user: $$user"; \
+	sed -e 's|/usr/local/bin/vibeguard|$(BINDIR)/vibeguard|' -e "s|^User=.*|User=$$user|" \
+	  lxc/vibeguard.service > $(DIST)/vibeguard.service
 	install -Dm644 $(DIST)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard.service
-	install -d -m700 $(DESTDIR)$(DATA_DIR)
 	install -Dm644 /dev/null $(DESTDIR)$(SYSCTL)
 	echo 'net.ipv4.ip_forward=1' > $(DESTDIR)$(SYSCTL)
 ifeq ($(DESTDIR),)
@@ -72,7 +84,7 @@ ifeq ($(DESTDIR),)
 	sysctl -q -p $(SYSCTL)
 	systemctl daemon-reload
 	systemctl enable --now vibeguard.service
-	@command -v wg >/dev/null || echo "WARNING: wireguard-tools (wg, wg-quick) not found; install them."
+	@command -v wg >/dev/null || echo "WARNING: wireguard-tools (wg) not found; install it."
 	@echo "VibeGuard installed. Admin password is in $(ENV_FILE); UI on :8080 by default."
 endif
 
@@ -83,7 +95,7 @@ endif
 	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(SYSCTL)
 ifeq ($(DESTDIR),)
 	systemctl daemon-reload
-	@echo "Kept $(DATA_DIR) and $(ENV_FILE); remove them manually to wipe all state."
+	@echo "Kept $(DATA_DIR), $(ENV_FILE) and the service user; remove them manually to wipe all state."
 endif
 
 ## --- Docker ----------------------------------------------------------------

@@ -101,3 +101,20 @@ func TestAddressAllocation(t *testing.T) {
 		t.Fatal("expected subnet exhaustion")
 	}
 }
+
+func TestStripConf(t *testing.T) {
+	s := Service{Name: "wg0", Address: "10.8.0.1/24, fd00::1/64", ListenPort: 51820, PrivateKey: "cHJpdmF0ZQ=="}
+	u := User{Name: "alice # = x", Address: "10.8.0.2/32", PublicKey: "cHVibGlj", PresharedKey: "cHNr"}
+	wg, addrs := stripConf(ServerConfig(s, []User{u}))
+	if strings.Contains(wg, "Address") {
+		t.Errorf("Address not stripped:\n%s", wg)
+	}
+	for _, want := range []string{"ListenPort = 51820", "PrivateKey = cHJpdmF0ZQ==", "AllowedIPs = 10.8.0.2/32", "[Peer]"} {
+		if !strings.Contains(wg, want) {
+			t.Errorf("missing %q in:\n%s", want, wg)
+		}
+	}
+	if len(addrs) != 2 || addrs[0] != "10.8.0.1/24" || addrs[1] != "fd00::1/64" {
+		t.Errorf("addrs = %v", addrs)
+	}
+}

@@ -17,8 +17,8 @@ RUN apt-get update \
 COPY --from=build /vibeguard /usr/local/bin/vibeguard
 COPY lxc/vibeguard.service lxc/vibeguard-firstboot.service /etc/systemd/system/
 COPY lxc/vibeguard-firstboot /usr/local/sbin/vibeguard-firstboot
-RUN mkdir -p /var/lib/vibeguard /etc/wireguard \
- && chmod 700 /var/lib/vibeguard /etc/wireguard \
+RUN useradd --system --user-group --home-dir /var/lib/vibeguard --no-create-home \
+      --shell /usr/sbin/nologin vibeguard \
  && echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-vibeguard.conf \
  && systemctl enable vibeguard.service vibeguard-firstboot.service \
  && : > /etc/machine-id && rm -f /var/lib/dbus/machine-id
