@@ -62,6 +62,12 @@ Install `wireguard-tools` on the host first. If `DESTDIR` is set, only the files
 and the systemd units preinstalled, then writes `dist/vibeguard-debian-12_<version>_amd64.tar.zst`
 (or `.tar.gz` if `zstd` isn't installed; set `LXC_ARCH=arm64` for other architectures, which needs qemu binfmt).
 On first boot the container generates a random admin password into `/etc/vibeguard.env`.
+
+The result is a plain LXC system container: Debian with systemd as init, running VibeGuard as a
+native systemd service. Docker is only a build-time tool on the build machine, used to assemble the
+root filesystem. The template contains no Docker, containerd or other container runtime, and
+neither the Proxmox host nor the container needs Docker.
+
 See [Example deployment on Proxmox](#example-deployment-on-proxmox) for how to use it.
 
 ### Example deployment on Proxmox
@@ -179,7 +185,8 @@ Configuring TUN anyway keeps the container working if you add one later, and
 
 **3. Container features.**
 - `--unprivileged 1`: container root is mapped to an unprivileged host UID.
-- `--features nesting=1`: needed for systemd in Debian 12 containers to start cleanly.
+- `--features nesting=1`: needed for systemd in Debian 12 containers to start cleanly (its
+  sandboxing features need it). It is not used to run Docker or other containers inside.
 
 **4. IP forwarding.** `net.ipv4.ip_forward` is set per network namespace, so the container sets it
 itself (`/etc/sysctl.d/99-vibeguard.conf`); the host's setting doesn't matter.
