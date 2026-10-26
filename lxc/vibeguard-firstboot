@@ -1,0 +1,9 @@
+#!/bin/sh
+# Writes /etc/vibeguard.env with a random admin password if it does not exist yet.
+set -eu
+ENV_FILE=${1:-/etc/vibeguard.env}
+[ -s "$ENV_FILE" ] && exit 0
+umask 077
+PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=')
+printf 'VIBEGUARD_ADMIN_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
+echo "VibeGuard admin password generated and stored in $ENV_FILE"

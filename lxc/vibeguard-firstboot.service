@@ -1,0 +1,11 @@
+[Unit]
+Description=Generate VibeGuard admin password
+ConditionPathExists=!/etc/vibeguard.env
+Before=vibeguard.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vibeguard-firstboot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,11 +1,21 @@
 [Unit]
 Description=VibeGuard WireGuard management UI
+Wants=network-online.target
 After=network-online.target
 
 [Service]
+User=vibeguard
 EnvironmentFile=/etc/vibeguard.env
+Environment=VIBEGUARD_WG_DIR=/var/lib/vibeguard/wireguard
 ExecStart=/usr/local/bin/vibeguard
 Restart=on-failure
+# Creates /var/lib/vibeguard owned by User= (and fixes ownership of existing data).
+StateDirectory=vibeguard
+StateDirectoryMode=0700
+# CAP_NET_ADMIN manages WireGuard interfaces; CAP_NET_BIND_SERVICE allows VIBEGUARD_LISTEN below 1024.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target
