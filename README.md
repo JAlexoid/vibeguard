@@ -87,6 +87,8 @@ Example values; change them for your setup:
     make lxc-template
     scp dist/vibeguard-debian-12_*_amd64.tar.zst root@pve.lan:/var/lib/vz/template/cache/
 
+Or download a published template directly on the host (see [Downloading a release](#downloading-a-release-on-proxmox)).
+
 **2. Prepare the host** (once, as root on `pve.lan`):
 
     echo wireguard > /etc/modules-load.d/wireguard.conf
@@ -140,6 +142,46 @@ reverse proxy.
     make && scp vibeguard root@pve.lan:/tmp/
     pct push 120 /tmp/vibeguard /usr/local/bin/vibeguard --perms 0755
     pct exec 120 -- systemctl restart vibeguard
+
+### Publishing a release on GitHub
+
+Releases ship the LXC template as a release asset, so Proxmox hosts can download it without Docker
+or a build machine. The template's file name comes from `git describe`, so build from a clean tree
+on the release tag. Otherwise the name ends in `-dirty` or a commit suffix.
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh auth login`) and Docker.
+
+    # 1. Tag the release on an up-to-date, clean main
+    git checkout main && git pull
+    git tag -a v0.1.0 -m "VibeGuard v0.1.0"
+
+    # 2. Build and test; produces dist/vibeguard-debian-12_v0.1.0_amd64.tar.zst
+    make clean test lxc-template
+    # optional: make lxc-template LXC_ARCH=arm64   (needs qemu binfmt)
+
+    # 3. Checksums
+    (cd dist && sha256sum vibeguard-debian-12_* > SHA256SUMS)
+
+    # 4. Push the tag and create the release with the assets attached
+    git push origin v0.1.0
+    gh release create v0.1.0 dist/vibeguard-debian-12_* dist/SHA256SUMS \
+      --title "VibeGuard v0.1.0" --generate-notes
+
+Use `--draft` to review the release before publishing it. To replace an asset on an existing release,
+run `gh release upload v0.1.0 <file> --clobber`. Then regenerate and re-upload `SHA256SUMS` too.
+
+#### Downloading a release on Proxmox
+
+On the Proxmox host, download the template and checksums into the template cache and verify them:
+
+    V=v0.1.0
+    URL=https://github.com/JAlexoid/vibeguard/releases/download/$V
+    cd /var/lib/vz/template/cache
+    wget "$URL/vibeguard-debian-12_${V}_amd64.tar.zst" "$URL/SHA256SUMS"
+    sha256sum --ignore-missing -c SHA256SUMS && rm SHA256SUMS
+
+The template then shows up as `local:vztmpl/vibeguard-debian-12_v0.1.0_amd64.tar.zst`; continue with
+step 2 of the [example deployment](#example-deployment-on-proxmox).
 
 ### Script
 
