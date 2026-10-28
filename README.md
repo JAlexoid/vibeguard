@@ -67,6 +67,15 @@ before dropping privileges.
     sudo make install                          # prompts, default: vibeguard
     sudo make install VIBEGUARD_USER=wgadmin   # no prompt
 
+**Start interfaces on boot.** Set `VIBEGUARD_WG_QUICK_BOOT=1` (default: off) and starting a service in
+the UI also runs `systemctl enable wg-quick@<name>`, so the interface comes up at boot; stopping or
+deleting the service runs `systemctl disable`. Enabling is idempotent and doesn't start anything
+itself. If `VIBEGUARD_WG_DIR` isn't `/etc/wireguard`, the config is symlinked there for wg-quick.
+It is skipped silently when systemd isn't running (e.g. Docker), and failures are only logged.
+`systemctl enable` and writing to `/etc/wireguard` need root, so this only works when VibeGuard runs
+as root (`VIBEGUARD_USER=root`, with the unit's capability limits and `NoNewPrivileges` relaxed);
+with the default unprivileged user it logs an error and the interface isn't enabled on boot.
+
 ## LXC (Proxmox)
 
 ### Prebuilt template

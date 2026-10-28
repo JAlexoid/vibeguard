@@ -39,7 +39,10 @@ func QRPNG(content string) ([]byte, error) {
 
 // Runner applies service configuration to the host using wg and ip. It avoids wg-quick,
 // which insists on running as root, so the service only needs CAP_NET_ADMIN.
-type Runner struct{ Dir string }
+type Runner struct {
+	Dir  string
+	Boot bool // also enable wg-quick@<iface> so started interfaces come up on boot
+}
 
 func (r Runner) confPath(name string) string { return filepath.Join(r.Dir, name+".conf") }
 

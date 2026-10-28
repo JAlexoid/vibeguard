@@ -102,9 +102,19 @@ func (s *Server) Handler() http.Handler {
 			if err = s.runner.Write(v, s.store.Users(name)); err == nil && !s.runner.Active(name) {
 				err = s.runner.Start(name)
 			}
+			if err == nil && s.runner.Boot {
+				if berr := s.runner.EnableBoot(name); berr != nil {
+					log.Printf("enable wg-quick@%s on boot: %v", name, berr)
+				}
+			}
 		case "stop":
 			if s.runner.Active(name) {
 				err = s.runner.Stop(name)
+			}
+			if err == nil && s.runner.Boot {
+				if berr := s.runner.DisableBoot(name); berr != nil {
+					log.Printf("disable wg-quick@%s on boot: %v", name, berr)
+				}
 			}
 		default:
 			fail(w, 404, errString("unknown action"))
@@ -126,6 +136,11 @@ func (s *Server) Handler() http.Handler {
 			if err := s.runner.Stop(name); err != nil {
 				fail(w, 500, err)
 				return
+			}
+		}
+		if s.runner.Boot {
+			if berr := s.runner.DisableBoot(name); berr != nil {
+				log.Printf("disable wg-quick@%s on boot: %v", name, berr)
 			}
 		}
 		os.Remove(s.runner.confPath(name))
@@ -237,7 +252,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &Server{store: st, runner: Runner{Dir: env("VIBEGUARD_WG_DIR", "/etc/wireguard")}, auth: NewAuth(pw)}
+	srv := &Server{store: st, runner: Runner{Dir: env("VIBEGUARD_WG_DIR", "/etc/wireguard"), Boot: os.Getenv("VIBEGUARD_WG_QUICK_BOOT") == "1"}, auth: NewAuth(pw)}
 	for _, v := range st.Services() {
 		if err := srv.runner.Write(v, st.Users(v.Name)); err != nil {
 			log.Printf("write %s: %v", v.Name, err)
