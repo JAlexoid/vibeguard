@@ -14,6 +14,8 @@ GO_SRC  := $(wildcard *.go) go.mod go.sum $(wildcard web/*)
 PREFIX   ?= /usr/local
 BINDIR   ?= $(PREFIX)/bin
 UNITDIR  ?= /etc/systemd/system
+POLKITDIR ?= /etc/polkit-1/rules.d
+LIBEXECDIR ?= $(PREFIX)/libexec
 ENV_FILE := /etc/vibeguard.env
 DATA_DIR := /var/lib/vibeguard
 SYSCTL   := /etc/sysctl.d/99-vibeguard.conf
@@ -53,7 +55,7 @@ vet: ## Run go vet
 fmt: ## Format Go sources
 	gofmt -w $(wildcard *.go)
 
-run: ## Run locally (needs CAP_NET_ADMIN/root and VIBEGUARD_ADMIN_PASSWORD)
+run: ## Run locally (systemd/polkit, or CAP_NET_ADMIN for direct mode)
 	$(GO) run .
 
 clean: ## Remove build outputs
@@ -62,6 +64,10 @@ clean: ## Remove build outputs
 ## --- systemd install -------------------------------------------------------
 
 install: $(BINARY) ## Install binary + systemd unit and start it (run as root)
+ifeq ($(DESTDIR),)
+	@command -v wg-quick >/dev/null || { echo "Install wireguard-tools first" >&2; exit 1; }
+	@test -d /usr/share/polkit-1 || { echo "Install polkitd first" >&2; exit 1; }
+endif
 	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/vibeguard
 	@mkdir -p $(DIST)
 	@user='$(VIBEGUARD_USER)'; \
@@ -75,15 +81,21 @@ install: $(BINARY) ## Install binary + systemd unit and start it (run as root)
 	fi; \
 	echo "Service user: $$user"; \
 	sed -e 's|/usr/local/bin/vibeguard|$(BINDIR)/vibeguard|' -e "s|^User=.*|User=$$user|" \
-	  lxc/vibeguard.service > $(DIST)/vibeguard.service
+	  lxc/vibeguard.service > $(DIST)/vibeguard.service; \
+	  sed "s|subject.user !== \"vibeguard\"|subject.user !== \"$$user\"|" systemd/50-vibeguard.rules > $(DIST)/50-vibeguard.rules
 	install -Dm644 $(DIST)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard.service
+	install -Dm755 systemd/vibeguard-wg-quick $(DESTDIR)$(LIBEXECDIR)/vibeguard-wg-quick
+	sed 's|/usr/local/libexec|$(LIBEXECDIR)|g' systemd/wg-quick-vibeguard.conf > $(DIST)/wg-quick-vibeguard.conf
+	install -Dm644 $(DIST)/wg-quick-vibeguard.conf $(DESTDIR)$(UNITDIR)/wg-quick@.service.d/vibeguard.conf
+	install -Dm644 $(DIST)/50-vibeguard.rules $(DESTDIR)$(POLKITDIR)/50-vibeguard.rules
 	install -Dm644 /dev/null $(DESTDIR)$(SYSCTL)
-	echo 'net.ipv4.ip_forward=1' > $(DESTDIR)$(SYSCTL)
+	printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > $(DESTDIR)$(SYSCTL)
 ifeq ($(DESTDIR),)
 	sh lxc/vibeguard-firstboot $(ENV_FILE)
 	sysctl -q -p $(SYSCTL)
 	systemctl daemon-reload
-	systemctl enable --now vibeguard.service
+	systemctl enable vibeguard.service
+	systemctl restart vibeguard.service
 	@command -v wg >/dev/null || echo "WARNING: wireguard-tools (wg) not found; install it."
 	@echo "VibeGuard installed. Admin password is in $(ENV_FILE); UI on :8080 by default."
 endif
@@ -92,7 +104,9 @@ uninstall: ## Stop and remove the binary + unit (keeps data and password)
 ifeq ($(DESTDIR),)
 	-systemctl disable --now vibeguard.service
 endif
-	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(SYSCTL)
+	# Keep the wg-quick helper/drop-in: enabled tunnels must still start and stop
+	# after uninstalling the UI. Disable those units before removing these files.
+	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(SYSCTL) $(DESTDIR)$(POLKITDIR)/50-vibeguard.rules
 ifeq ($(DESTDIR),)
 	systemctl daemon-reload
 	@echo "Kept $(DATA_DIR), $(ENV_FILE) and the service user; remove them manually to wipe all state."

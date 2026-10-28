@@ -4,17 +4,19 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-# Runs as root: VIBEGUARD_WG_QUICK_BOOT needs `systemctl enable wg-quick@<name>` and
-# writes to /etc/wireguard. `make install` can override User= via VIBEGUARD_USER.
-User=root
+User=vibeguard
 EnvironmentFile=/etc/vibeguard.env
-Environment=VIBEGUARD_WG_DIR=/etc/wireguard
+Environment=VIBEGUARD_SYSTEMD=1
+Environment=VIBEGUARD_WG_DIR=/var/lib/vibeguard/wireguard
 ExecStart=/usr/local/bin/vibeguard
 Restart=on-failure
-# Keeps the state directory (data.json) private to the service.
+# Creates /var/lib/vibeguard owned by User= (and fixes ownership of existing data).
 StateDirectory=vibeguard
 StateDirectoryMode=0700
-# No capability bounding and no NoNewPrivileges, so systemctl can be run.
+# systemd/polkit manages interfaces; the UI itself has no network-admin capability.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target

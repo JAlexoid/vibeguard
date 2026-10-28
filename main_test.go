@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,31 +116,5 @@ func TestStripConf(t *testing.T) {
 	}
 	if len(addrs) != 2 || addrs[0] != "10.8.0.1/24" || addrs[1] != "fd00::1/64" {
 		t.Errorf("addrs = %v", addrs)
-	}
-}
-
-func TestBootNoSystemd(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	r := Runner{Dir: t.TempDir(), Boot: true}
-	if err := r.EnableBoot("wg0"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.DisableBoot("wg0"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLinkQuickConf(t *testing.T) {
-	old := wgQuickDir
-	wgQuickDir = t.TempDir()
-	defer func() { wgQuickDir = old }()
-	r := Runner{Dir: t.TempDir()}
-	for i := 0; i < 2; i++ { // idempotent
-		if err := r.linkQuickConf("wg0"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got, _ := os.Readlink(filepath.Join(wgQuickDir, "wg0.conf")); got != r.confPath("wg0") {
-		t.Fatalf("link = %q", got)
 	}
 }

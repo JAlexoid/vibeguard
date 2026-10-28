@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -15,9 +19,11 @@ import (
 var webFS embed.FS
 
 type Server struct {
-	store  *Store
-	runner Runner
-	auth   *Auth
+	store        *Store
+	runner       Runner
+	auth         *Auth
+	mdnsDefaults MDNSSettings
+	mutations    sync.Mutex
 }
 
 func env(k, def string) string {
@@ -44,12 +50,14 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		var in struct{ Password string }
-		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil || !s.auth.CheckPassword(in.Password) {
+		decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
+		token, ok := s.auth.Authenticate(in.Password)
+		if decodeErr != nil || !ok {
 			time.Sleep(500 * time.Millisecond)
 			fail(w, 401, errString("invalid password"))
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.auth.Token(), Path: "/", HttpOnly: true, Secure: secure(r), SameSite: http.SameSiteStrictMode, MaxAge: int(s.auth.ttl.Seconds())})
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: secure(r), SameSite: http.SameSiteStrictMode, MaxAge: int(s.auth.ttl.Seconds())})
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
@@ -58,16 +66,63 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	api := http.NewServeMux()
+	api.HandleFunc("POST /api/password", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			CurrentPassword string `json:"currentPassword"`
+			NewPassword     string `json:"newPassword"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&in); err != nil {
+			fail(w, 400, errString("bad request"))
+			return
+		}
+		if err := s.auth.ChangePassword(in.CurrentPassword, in.NewPassword); err != nil {
+			code := 500
+			if errors.Is(err, errPasswordLength) {
+				code = 400
+			}
+			if errors.Is(err, errCurrentPassword) {
+				code = 403
+			}
+			fail(w, code, err)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", HttpOnly: true, Secure: secure(r), SameSite: http.SameSiteStrictMode, MaxAge: -1})
+		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	api.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"mdns": s.store.MDNS(s.mdnsDefaults), "systemd": s.runner.Systemd})
+	})
+	api.HandleFunc("PUT /api/settings/mdns", func(w http.ResponseWriter, r *http.Request) {
+		var in MDNSSettings
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&in); err != nil {
+			fail(w, 400, errString("bad request"))
+			return
+		}
+		if err := s.store.SetMDNS(in); err != nil {
+			fail(w, 400, err)
+			return
+		}
+		writeJSON(w, 200, s.store.MDNS(s.mdnsDefaults))
+	})
+	api.HandleFunc("GET /api/interfaces", func(w http.ResponseWriter, r *http.Request) {
+		ifcs, err := localInterfaces()
+		if err != nil {
+			fail(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, ifcs)
+	})
 	api.HandleFunc("GET /api/services", func(w http.ResponseWriter, r *http.Request) {
 		type view struct {
 			Service
 			PrivateKey string `json:"privateKey,omitempty"`
 			Active     bool   `json:"active"`
+			Enabled    bool   `json:"enabled"`
 			Users      int    `json:"users"`
 		}
 		out := []view{}
 		for _, v := range s.store.Services() {
-			out = append(out, view{Service: v, Active: s.runner.Active(v.Name), Users: len(s.store.Users(v.Name))})
+			out = append(out, view{Service: v, Active: s.runner.Active(v.Name), Enabled: s.runner.Enabled(v.Name), Users: len(s.store.Users(v.Name))})
 		}
 		writeJSON(w, 200, out)
 	})
@@ -98,24 +153,16 @@ func (s *Server) Handler() http.Handler {
 		}
 		var err error
 		switch action {
-		case "start":
-			if err = s.runner.Write(v, s.store.Users(name)); err == nil && !s.runner.Active(name) {
-				err = s.runner.Start(name)
-			}
-			if err == nil && s.runner.Boot {
-				if berr := s.runner.EnableBoot(name); berr != nil {
-					log.Printf("enable wg-quick@%s on boot: %v", name, berr)
+		case "start", "restart":
+			if err = s.runner.Write(v, s.store.Users(name)); err == nil {
+				if action == "restart" {
+					err = s.runner.Restart(name)
+				} else {
+					err = s.runner.Start(name)
 				}
 			}
 		case "stop":
-			if s.runner.Active(name) {
-				err = s.runner.Stop(name)
-			}
-			if err == nil && s.runner.Boot {
-				if berr := s.runner.DisableBoot(name); berr != nil {
-					log.Printf("disable wg-quick@%s on boot: %v", name, berr)
-				}
-			}
+			err = s.runner.Stop(name)
 		default:
 			fail(w, 404, errString("unknown action"))
 			return
@@ -132,18 +179,14 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 404, errString("service not found"))
 			return
 		}
-		if s.runner.Active(name) {
-			if err := s.runner.Stop(name); err != nil {
-				fail(w, 500, err)
-				return
-			}
+		if err := s.runner.Stop(name); err != nil {
+			fail(w, 500, err)
+			return
 		}
-		if s.runner.Boot {
-			if berr := s.runner.DisableBoot(name); berr != nil {
-				log.Printf("disable wg-quick@%s on boot: %v", name, berr)
-			}
+		if err := os.Remove(s.runner.confPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fail(w, 500, err)
+			return
 		}
-		os.Remove(s.runner.confPath(name))
 		if err := s.store.DeleteService(name); err != nil {
 			fail(w, 500, err)
 			return
@@ -219,7 +262,13 @@ func (s *Server) Handler() http.Handler {
 			w.Write(png)
 		}
 	})
-	mux.Handle("/api/", s.auth.Middleware(api))
+	mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" && r.Method != "HEAD" {
+			s.mutations.Lock()
+			defer s.mutations.Unlock()
+		}
+		s.auth.Middleware(api).ServeHTTP(w, r)
+	}))
 	return mux
 }
 
@@ -245,22 +294,42 @@ func (e errString) Error() string { return string(e) }
 
 func main() {
 	pw := os.Getenv("VIBEGUARD_ADMIN_PASSWORD")
-	if pw == "" {
-		log.Fatal("VIBEGUARD_ADMIN_PASSWORD must be set")
-	}
 	st, err := NewStore(env("VIBEGUARD_DATA", "/var/lib/vibeguard/data.json"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &Server{store: st, runner: Runner{Dir: env("VIBEGUARD_WG_DIR", "/etc/wireguard"), Boot: os.Getenv("VIBEGUARD_WG_QUICK_BOOT") == "1"}, auth: NewAuth(pw)}
+	auth, err := NewPersistentAuth(pw, env("VIBEGUARD_PASSWORD_FILE", filepath.Join(filepath.Dir(st.path), "admin-password.json")))
+	if err != nil {
+		log.Fatal(err)
+	}
+	runner, err := newRunner(os.Getenv("VIBEGUARD_WG_DIR"), env("VIBEGUARD_SYSTEMD", "auto"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if runner.Dir == "" {
+		runner.Dir = "/etc/wireguard"
+		if runner.Systemd {
+			runner.Dir = "/var/lib/vibeguard/wireguard"
+		}
+	}
+	if runner.Systemd && filepath.Clean(runner.Dir) != "/var/lib/vibeguard/wireguard" {
+		log.Fatal("systemd mode requires VIBEGUARD_WG_DIR=/var/lib/vibeguard/wireguard (the installed wg-quick helper path)")
+	}
+	reflector := NewReflector(os.Getenv("VIBEGUARD_MDNS_UPSTREAM"), st)
+	srv := &Server{store: st, runner: runner, auth: auth, mdnsDefaults: reflector.defaults}
 	for _, v := range st.Services() {
 		if err := srv.runner.Write(v, st.Users(v.Name)); err != nil {
 			log.Printf("write %s: %v", v.Name, err)
 		}
 	}
-	if up := os.Getenv("VIBEGUARD_MDNS_UPSTREAM"); up != "" {
-		go func() { log.Printf("mdns reflector stopped: %v", NewReflector(up, st).Run()) }()
-	}
+	go func() {
+		for {
+			if err := reflector.RunContext(context.Background()); err != nil {
+				log.Printf("mdns reflector: %v", err)
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}()
 	addr := env("VIBEGUARD_LISTEN", ":8080")
 	log.Printf("vibeguard listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, srv.Handler()))

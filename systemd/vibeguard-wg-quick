@@ -1,0 +1,39 @@
+#!/bin/sh
+# Root-owned helper for wg-quick@.service. VibeGuard writes only its own
+# generated configs; unrelated wg-quick instances retain /etc/wireguard configs.
+set -eu
+[ "$#" -eq 2 ] || exit 2
+action=$1
+name=$2
+case "$name" in ''|[!a-zA-Z0-9_]*|*[!a-zA-Z0-9_.-]*) echo 'Invalid interface name' >&2; exit 2;; esac
+[ "${#name}" -le 15 ] || exit 2
+managed=/var/lib/vibeguard/wireguard/$name.conf
+conf=/etc/wireguard/$name.conf
+# Never silently substitute an existing, unrelated host configuration.
+if [ -f "$managed" ]; then
+ if [ -e "$conf" ] && [ "$(readlink -f "$conf")" != "$(readlink -f "$managed")" ]; then
+  echo "Conflicting configuration: $conf and $managed" >&2
+  exit 1
+ fi
+ conf=$managed
+fi
+case "$action" in
+ up)
+  wg-quick up "$conf"
+  if [ "$conf" = "$managed" ]; then
+   if ! ip link set dev "$name" multicast on; then
+    wg-quick down "$conf"
+    exit 1
+   fi
+  fi
+  ;;
+ down) exec wg-quick down "$conf" ;;
+ reload)
+  tmp=$(mktemp /run/vibeguard-wg.XXXXXX)
+  trap 'rm -f "$tmp"' EXIT HUP INT TERM
+  chmod 600 "$tmp"
+  wg-quick strip "$conf" > "$tmp"
+  wg syncconf "$name" "$tmp"
+  ;;
+ *) exit 2 ;;
+esac
