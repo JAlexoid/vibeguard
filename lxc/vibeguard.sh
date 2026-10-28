@@ -7,10 +7,19 @@ set -euo pipefail
 CTID=${1:?container id}
 PASSWORD=${2:?admin password}
 STORAGE=${3:-local-lvm}
-TEMPLATE=${TEMPLATE:-debian-12-standard_12.7-1_amd64.tar.zst}
+# Select an actually published Debian 13 template instead of pinning a stale
+# Proxmox template revision. TEMPLATE can select a specific cached/published image.
+if [ -z "${TEMPLATE:-}" ]; then
+  pveam update
+  TEMPLATE=$(pveam available --section system | awk '$2 ~ /^debian-13-standard_.*_amd64\.tar\.zst$/ {print $2}' | sort -V | tail -n 1)
+  if [ -z "$TEMPLATE" ]; then
+    echo "No Debian 13 amd64 template found; check pveam available or set TEMPLATE explicitly." >&2
+    exit 1
+  fi
+fi
 REPO=${REPO:-https://github.com/JAlexoid/vibeguard}
 
-pveam download local "$TEMPLATE" || true
+pveam download local "$TEMPLATE"
 pct create "$CTID" "local:vztmpl/$TEMPLATE" \
   --hostname vibeguard --cores 1 --memory 256 --rootfs "$STORAGE:2" \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp --unprivileged 1 --features nesting=1 --onboot 1

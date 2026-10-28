@@ -246,9 +246,12 @@ Or download a published template directly on the host (see [Downloading a releas
 
     # If you skip this step, you can add the line to /etc/vibeguard.env later and run: pct exec 120 -- systemctl restart vibeguard
 
-**6. Start it and get the admin password:**
+**6. Start it, check polkit, and get the admin password:**
 
     pct start 120
+    pct exec 120 -- dpkg-query -W -f='${Status}\n' polkitd  # install ok installed
+    pct exec 120 -- systemctl is-active polkit.service        # active
+    pct exec 120 -- runuser -u vibeguard -- sh -c 'exec pkcheck --action-id org.freedesktop.systemd1.manage-unit-files --process "$$"'  # exit 0
     pct exec 120 -- cat /etc/vibeguard.env
     pct exec 120 -- systemctl is-active vibeguard     # active
 
@@ -312,8 +315,17 @@ step 2 of the [example deployment](#example-deployment-on-proxmox).
 
     ./lxc/vibeguard.sh <CTID> <admin-password> [storage]
 
-Creates a Debian 12 container with TUN access, builds VibeGuard and installs the
+Creates a **Debian 13** container with TUN access, builds VibeGuard and installs the
 `lxc/vibeguard.service` systemd unit. UI is at `http://<container-ip>:8080`.
+The script refreshes the Proxmox template catalog and selects the latest available
+`debian-13-standard_*_amd64.tar.zst` image. To choose a specific image, list the available
+Debian 13 templates with `pveam available --section system`, then pass its exact name:
+
+    TEMPLATE='<debian-13-template-name>' ./lxc/vibeguard.sh <CTID> <admin-password> [storage]
+
+This manual creation path installs `polkitd`, starts `polkit.service`, checks it is active,
+and verifies the `vibeguard` account is authorized before starting the UI. The Docker-built
+preinstalled template described above remains based on Debian 12.
 
 ### Unprivileged container requirements
 
@@ -352,7 +364,7 @@ Configuring TUN anyway keeps the container working if you add one later, and
 
 **3. Container features.**
 - `--unprivileged 1`: container root is mapped to an unprivileged host UID.
-- `--features nesting=1`: needed for systemd in Debian 12 containers to start cleanly (its
+- `--features nesting=1`: needed for systemd in Debian 12/13 containers to start cleanly (its
   sandboxing features need it). It is not used to run Docker or other containers inside.
 
 **4. IP forwarding.** `net.ipv4.ip_forward` is set per network namespace, so the container sets it
@@ -366,6 +378,9 @@ container's bridge interface (e.g. `eth0`) for `VIBEGUARD_MDNS_UPSTREAM`.
     pct exec <CTID> -- ls -l /dev/net/tun                                        # crw-rw-rw- ... nobody nogroup 10, 200
     pct exec <CTID> -- sh -c 'ip link add wgtest type wireguard && ip link del wgtest && echo kernel wireguard OK'
     pct exec <CTID> -- cat /proc/sys/net/ipv4/ip_forward                         # 1
+    pct exec <CTID> -- dpkg-query -W -f='${Status}\n' polkitd                # install ok installed
+    pct exec <CTID> -- systemctl is-active polkit.service                     # active
+    pct exec <CTID> -- runuser -u vibeguard -- sh -c 'exec pkcheck --action-id org.freedesktop.systemd1.manage-unit-files --process "$$"'  # exit 0
     pct exec <CTID> -- systemctl status vibeguard
 
 ## Test
