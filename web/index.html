@@ -3,92 +3,69 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VibeGuard</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}
-table{width:100%;border-collapse:collapse;margin:.5rem 0 1rem}
-th,td{text-align:left;padding:.4rem;border-bottom:1px solid #ddd}
-input{padding:.4rem;margin:.2rem .2rem .2rem 0}
-button{padding:.4rem .8rem;margin:.1rem;cursor:pointer}
-.err{color:#b00020}.on{color:#0a7d2c}.off{color:#888}
-#qr{display:none;position:fixed;inset:0;background:#000a;align-items:center;justify-content:center}
-#qr div{background:#fff;padding:1rem;text-align:center}
-</style>
+<meta name="color-scheme" content="light">
+<title>VibeGuard · WireGuard manager</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
 </head>
 <body>
-<h1>VibeGuard</h1>
-<div id="login" hidden>
-  <form id="loginForm"><input type="password" id="pw" placeholder="Admin password" autofocus><button>Log in</button></form>
-</div>
+<header><div><span class="eyebrow">WIREGUARD MANAGER</span><h1>VibeGuard<span class="brand-dot">.</span></h1></div><button id="logout" class="secondary" hidden>Log out</button></header>
+<p id="msg" role="status" aria-live="polite" hidden></p>
+<main>
+<section id="login" class="card login-card" hidden>
+ <span class="eyebrow">WELCOME BACK</span><h2>Your network, in one place.</h2><p class="muted">Sign in with your admin password to manage interfaces and peers.</p>
+ <form id="loginForm"><label>Admin password<input type="password" id="pw" autocomplete="current-password" required></label><button>Log in</button></form>
+</section>
 <div id="app" hidden>
-  <button id="logout" style="float:right">Log out</button>
-  <h2>Services</h2>
-  <table><thead><tr><th>Name</th><th>Address</th><th>Port</th><th>Endpoint</th><th>Users</th><th>Status</th><th></th></tr></thead><tbody id="services"></tbody></table>
-  <form id="svcForm">
-    <input name="name" placeholder="Name (wg0)" required>
-    <input name="address" placeholder="Address (10.8.0.1/24)" required>
-    <input name="listenPort" type="number" placeholder="Port" value="51820" required>
-    <input name="endpoint" placeholder="Public endpoint (host:port)" required>
-    <input name="dns" placeholder="DNS (optional)">
-    <button>Add service</button>
+ <nav aria-label="Main navigation"><button id="networkTab" aria-pressed="true">Network</button><button id="settingsTab" aria-pressed="false">Settings</button></nav>
+ <div id="networkPanel">
+ <section class="card">
+  <div class="section-heading"><div><span class="eyebrow">YOUR NETWORK</span><h2>Interfaces <span id="serviceCount" class="count">0</span></h2></div><span id="backend" class="muted"></span></div>
+  <p id="lifecycleHint" class="muted"></p>
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Addresses</th><th>Port / endpoint</th><th>Peers</th><th>Status</th><th>Actions</th></tr></thead><tbody id="services"></tbody></table></div>
+  <details><summary>Add an interface</summary><form id="svcForm" class="form-grid">
+   <label>Interface name<input name="name" placeholder="wg0" pattern="[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}" maxlength="15" required></label>
+   <label class="wide">Interface addresses<input name="address" placeholder="10.8.0.1/24, fd00:8::1/64" required><small>IPv4, IPv6, or one of each, separated by a comma.</small></label>
+   <label>Listen port<input name="listenPort" type="number" min="1" max="65535" value="51820" required></label>
+   <label>Public endpoint<input name="endpoint" placeholder="vpn.example.com:51820" required><small>Use [2001:db8::1]:51820 for an IPv6 address.</small></label>
+   <label>Client DNS <span class="muted">(optional)</span><input name="dns" placeholder="1.1.1.1, 2606:4700:4700::1111"></label>
+   <div class="form-actions"><button>Add interface</button></div>
+  </form></details>
+ </section>
+ <section class="card">
+  <div class="section-heading"><div><span class="eyebrow">CONNECTED PEOPLE & DEVICES</span><h2>Peers <span id="peerCount" class="count">0</span></h2></div></div>
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Interface</th><th>Addresses</th><th>Actions</th></tr></thead><tbody id="users"></tbody></table></div>
+  <details><summary>Add a peer</summary><form id="userForm" class="form-grid">
+   <label>Interface<select name="service" id="userSvc" required></select></label>
+   <label>Peer name<input name="name" placeholder="Alice’s phone" maxlength="64" required></label>
+   <label class="wide">Allowed routes <span class="muted">(optional)</span><input name="allowedIPs" placeholder="0.0.0.0/0, ::/0"><small>Leave empty to route all traffic for the interface’s address families.</small></label>
+   <div class="form-actions"><button id="addPeer">Add peer</button></div>
+  </form></details>
+ </section>
+ </div>
+ <div id="settingsPanel" hidden>
+ <section class="card">
+  <span class="eyebrow">LOCAL DISCOVERY</span><h2>mDNS repeater</h2><p class="muted">Share .local discovery between selected LAN interfaces and VPN peers over IPv4 and IPv6. Changes apply without restarting VibeGuard.</p>
+  <form id="mdnsForm">
+   <label class="check"><input id="mdnsEnabled" type="checkbox"> Enable mDNS repeater</label>
+   <div class="settings-grid"><fieldset><legend>LAN interfaces</legend><div id="mdnsUpstreams"></div></fieldset><fieldset><legend>VPN interfaces</legend><div id="mdnsServices"></div></fieldset></div>
+   <p class="muted">Select at least one of each. Only running VPN interfaces forward traffic. Clients must route 224.0.0.251/32 and ff02::fb/128 through their tunnel; the default routes include both.</p>
+   <button>Save discovery settings</button>
   </form>
-  <h2>Users</h2>
-  <table><thead><tr><th>Name</th><th>Service</th><th>Address</th><th></th></tr></thead><tbody id="users"></tbody></table>
-  <form id="userForm">
-    <select name="service" id="userSvc" required></select>
-    <input name="name" placeholder="User name" required>
-    <input name="allowedIPs" placeholder="Allowed IPs (default: all traffic)">
-    <button>Add user</button>
+ </section>
+ <section class="card">
+  <span class="eyebrow">ADMIN ACCESS</span><h2>Change password</h2><p class="muted">There is one shared admin password. Changing it signs out every session, including this one.</p>
+  <form id="passwordForm" class="form-grid">
+   <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+   <label>New password<input name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required><small>Use at least 12 characters.</small></label>
+   <label>Confirm new password<input name="confirmation" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+   <div class="form-actions"><button>Change password</button></div>
   </form>
-  <p id="msg" class="err"></p>
+ </section>
+ </div>
 </div>
-<div id="qr"><div><img id="qrImg" width="320" height="320" alt="QR code"><p><button id="qrClose">Close</button></p></div></div>
-<script>
-const $ = id => document.getElementById(id);
-function td(tr, text) { const c = tr.insertCell(); c.textContent = text; return c; }
-function btn(label, fn) { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; return b; }
-async function api(method, url, body) {
-  const r = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: body && JSON.stringify(body)});
-  if (r.status === 401 && url !== '/api/login') { show(false); throw new Error('unauthorized'); }
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
-  return j;
-}
-function show(loggedIn) { $('login').hidden = loggedIn; $('app').hidden = !loggedIn; }
-async function act(fn) { $('msg').textContent = ''; try { await fn(); await load(); } catch (e) { $('msg').textContent = e.message; } }
-async function load() {
-  const [svcs, users] = await Promise.all([api('GET', '/api/services'), api('GET', '/api/users')]);
-  show(true);
-  const sb = $('services'); sb.replaceChildren();
-  $('userSvc').replaceChildren();
-  for (const s of svcs) {
-    const tr = sb.insertRow();
-    td(tr, s.name); td(tr, s.address); td(tr, s.listenPort); td(tr, s.endpoint); td(tr, s.users);
-    const st = td(tr, s.active ? 'running' : 'stopped'); st.className = s.active ? 'on' : 'off';
-    const a = tr.insertCell();
-    a.append(btn(s.active ? 'Stop' : 'Start', () => act(() => api('POST', `/api/services/${encodeURIComponent(s.name)}/${s.active ? 'stop' : 'start'}`))),
-      btn('Delete', () => confirm(`Delete service ${s.name} and its users?`) && act(() => api('DELETE', `/api/services/${encodeURIComponent(s.name)}`))));
-    $('userSvc').add(new Option(s.name, s.name));
-  }
-  const ub = $('users'); ub.replaceChildren();
-  for (const u of users) {
-    const tr = ub.insertRow();
-    td(tr, u.name); td(tr, u.service); td(tr, u.address);
-    const a = tr.insertCell();
-    a.append(btn('QR', () => { $('qrImg').src = `/api/users/${u.id}/qr.png`; $('qr').style.display = 'flex'; }));
-    const dl = document.createElement('a'); dl.href = `/api/users/${u.id}/config`; dl.textContent = 'Config'; a.append(dl, ' ');
-    a.append(btn('Delete', () => confirm(`Delete user ${u.name}?`) && act(() => api('DELETE', `/api/users/${u.id}`))));
-  }
-}
-$('qrClose').onclick = () => { $('qr').style.display = 'none'; $('qrImg').removeAttribute('src'); };
-$('loginForm').onsubmit = async e => {
-  e.preventDefault();
-  try { await api('POST', '/api/login', {password: $('pw').value}); $('pw').value = ''; await load(); } catch (err) { alert(err.message); }
-};
-$('logout').onclick = async () => { await api('POST', '/api/logout'); show(false); };
-$('svcForm').onsubmit = e => { e.preventDefault(); const f = new FormData(e.target); const o = Object.fromEntries(f); o.listenPort = +o.listenPort; act(async () => { await api('POST', '/api/services', o); e.target.reset(); }); };
-$('userForm').onsubmit = e => { e.preventDefault(); act(async () => { await api('POST', '/api/users', Object.fromEntries(new FormData(e.target))); e.target.name.value = ''; }); };
-load().catch(() => show(false));
-</script>
+</main>
+<footer>VibeGuard · Simple, private network management</footer>
+<dialog id="qr" aria-labelledby="qrTitle"><h2 id="qrTitle">Connect a peer</h2><p class="muted">Scan with the WireGuard app. This code contains a private key.</p><img id="qrImg" width="320" height="320" alt="WireGuard configuration QR code"><div><button id="qrClose" class="secondary">Close</button></div></dialog>
 </body>
 </html>

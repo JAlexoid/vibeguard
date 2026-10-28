@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -37,8 +40,9 @@ type User struct {
 }
 
 type data struct {
-	Services []Service `json:"services"`
-	Users    []User    `json:"users"`
+	Services []Service     `json:"services"`
+	Users    []User        `json:"users"`
+	MDNS     *MDNSSettings `json:"mdns,omitempty"`
 }
 
 // Store persists services and users in a JSON file.
@@ -48,7 +52,7 @@ type Store struct {
 	d    data
 }
 
-var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_=+.-]{1,15}$`)
+var nameRe = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}$`)
 
 func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
@@ -67,11 +71,7 @@ func (s *Store) save() error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return atomicWrite(s.path, b)
 }
 
 func genKeyPair() (priv, pub string, err error) {
@@ -116,14 +116,27 @@ func (s *Store) AddService(v Service) (Service, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !nameRe.MatchString(v.Name) {
-		return v, errors.New("invalid name (1-15 chars: letters, digits, _=+.-)")
+		return v, errors.New("invalid name (1-15 letters, digits, underscores, dots or hyphens; start with a letter, digit or underscore)")
 	}
 	if _, ok := s.service(v.Name); ok {
 		return v, errors.New("service already exists")
 	}
-	if p, err := netip.ParsePrefix(v.Address); err != nil || !p.Addr().Is4() {
-		return v, errors.New("address must be an IPv4 CIDR such as 10.8.0.1/24")
+	prefixes, err := parseAddresses(v.Address)
+	if err != nil {
+		return v, err
 	}
+	v.Address = joinPrefixes(prefixes)
+	if v.Endpoint != "" {
+		host, port, err := net.SplitHostPort(v.Endpoint)
+		n, e := strconv.Atoi(port)
+		if err != nil || e != nil || n < 1 || n > 65535 || host == "" || strings.ContainsAny(host, "\r\n\t #=;\\") {
+			return v, errors.New("endpoint must be host:port or [IPv6]:port")
+		}
+	}
+	if strings.ContainsAny(v.DNS, "\r\n") {
+		return v, errors.New("DNS must be a single line")
+	}
+
 	if v.ListenPort < 1 || v.ListenPort > 65535 {
 		return v, errors.New("invalid listen port")
 	}
@@ -132,12 +145,15 @@ func (s *Store) AddService(v Service) (Service, error) {
 			return v, errors.New("listen port already used")
 		}
 	}
-	var err error
 	if v.PrivateKey, v.PublicKey, err = genKeyPair(); err != nil {
 		return v, err
 	}
 	s.d.Services = append(s.d.Services, v)
-	return v, s.save()
+	if err := s.save(); err != nil {
+		s.d.Services = s.d.Services[:len(s.d.Services)-1]
+		return v, err
+	}
+	return v, nil
 }
 
 func (s *Store) DeleteService(name string) error {
@@ -158,8 +174,26 @@ func (s *Store) DeleteService(name string) error {
 			users = append(users, u)
 		}
 	}
+	old := s.d
 	s.d.Services, s.d.Users = svcs, users
-	return s.save()
+	if s.d.MDNS != nil {
+		cfg := cloneMDNS(*s.d.MDNS)
+		cfg.Services = nil
+		for _, n := range s.d.MDNS.Services {
+			if n != name {
+				cfg.Services = append(cfg.Services, n)
+			}
+		}
+		if len(cfg.Services) == 0 {
+			cfg.Enabled = false
+		}
+		s.d.MDNS = &cfg
+	}
+	if err := s.save(); err != nil {
+		s.d = old
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Users(service string) []User {
@@ -197,34 +231,51 @@ func (s *Store) AddUser(service, name, allowed string) (User, error) {
 	if name == "" || len(name) > 64 {
 		return u, errors.New("invalid user name")
 	}
-	if u.AllowedIPs == "" {
-		u.AllowedIPs = "0.0.0.0/0, ::/0"
+	prefixes, err := parseAddresses(svc.Address)
+	if err != nil {
+		return u, err
 	}
-	prefix, _ := netip.ParsePrefix(svc.Address)
-	used := map[netip.Addr]bool{prefix.Addr(): true}
-	for _, o := range s.d.Users {
-		if o.Service == service {
-			if p, err := netip.ParsePrefix(o.Address); err == nil {
-				used[p.Addr()] = true
+	if allowed == "" {
+		var routes []string
+		for _, p := range prefixes {
+			if p.Addr().Is4() {
+				routes = append(routes, "0.0.0.0/0")
+			} else {
+				routes = append(routes, "::/0")
 			}
 		}
-	}
-	var ip netip.Addr
-	for a := prefix.Masked().Addr().Next(); prefix.Contains(a); a = a.Next() {
-		// skip broadcast address
-		if n := a.Next(); !prefix.Contains(n) {
-			break
+		u.AllowedIPs = strings.Join(routes, ", ")
+	} else {
+		var routes []string
+		for _, part := range strings.Split(allowed, ",") {
+			p, err := netip.ParsePrefix(strings.TrimSpace(part))
+			if err != nil || p.Addr().Is4In6() {
+				return u, errors.New("allowed IPs must be comma-separated IPv4/IPv6 CIDRs")
+			}
+			routes = append(routes, p.Masked().String())
 		}
-		if !used[a] {
-			ip = a
-			break
+		u.AllowedIPs = strings.Join(routes, ", ")
+	}
+	var allocated []netip.Prefix
+	for _, prefix := range prefixes {
+		used := map[netip.Addr]bool{prefix.Addr(): true}
+		for _, o := range s.d.Users {
+			if o.Service != service {
+				continue
+			}
+			for _, part := range strings.Split(o.Address, ",") {
+				if p, err := netip.ParsePrefix(strings.TrimSpace(part)); err == nil {
+					used[p.Addr()] = true
+				}
+			}
 		}
+		ip, err := allocateAddress(prefix, used)
+		if err != nil {
+			return u, err
+		}
+		allocated = append(allocated, netip.PrefixFrom(ip, ip.BitLen()))
 	}
-	if !ip.IsValid() {
-		return u, errors.New("no free addresses in service subnet")
-	}
-	u.Address = netip.PrefixFrom(ip, 32).String()
-	var err error
+	u.Address = joinPrefixes(allocated)
 	if u.PrivateKey, u.PublicKey, err = genKeyPair(); err != nil {
 		return u, err
 	}
@@ -235,7 +286,11 @@ func (s *Store) AddUser(service, name, allowed string) (User, error) {
 	rand.Read(idb)
 	u.ID = fmt.Sprintf("%x", idb)
 	s.d.Users = append(s.d.Users, u)
-	return u, s.save()
+	if err := s.save(); err != nil {
+		s.d.Users = s.d.Users[:len(s.d.Users)-1]
+		return u, err
+	}
+	return u, nil
 }
 
 func (s *Store) DeleteUser(id string) (User, error) {
@@ -243,8 +298,14 @@ func (s *Store) DeleteUser(id string) (User, error) {
 	defer s.mu.Unlock()
 	for i, u := range s.d.Users {
 		if u.ID == id {
-			s.d.Users = append(s.d.Users[:i], s.d.Users[i+1:]...)
-			return u, s.save()
+			old := s.d.Users
+			next := append([]User{}, old[:i]...)
+			s.d.Users = append(next, old[i+1:]...)
+			if err := s.save(); err != nil {
+				s.d.Users = old
+				return u, err
+			}
+			return u, nil
 		}
 	}
 	return User{}, errors.New("user not found")

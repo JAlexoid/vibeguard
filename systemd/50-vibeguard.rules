@@ -1,0 +1,13 @@
+// VibeGuard stays unprivileged; systemd performs the privileged operations.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "vibeguard") return;
+    // systemd's manage-unit-files action does not expose per-unit details.
+    // This intentionally permits this account to enable/disable unit files.
+    if (action.id === "org.freedesktop.systemd1.manage-unit-files") {
+        return polkit.Result.YES;
+    }
+    if (action.id === "org.freedesktop.systemd1.manage-units" &&
+        /^wg-quick@[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}\.service$/.test(action.lookup("unit") || "")) {
+        return polkit.Result.YES;
+    }
+});

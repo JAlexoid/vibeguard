@@ -6,11 +6,13 @@ services:
     cap_add: [NET_ADMIN]
     sysctls:
       net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "1"
     ports:
       - "8080:8080"
       - "51820:51820/udp"
     environment:
       VIBEGUARD_ADMIN_PASSWORD: change-me
+      VIBEGUARD_SYSTEMD: "0"
     volumes:
       - vibeguard-data:/var/lib/vibeguard
       - wireguard-conf:/etc/wireguard

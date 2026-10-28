@@ -4,34 +4,69 @@ Simple WireGuard management UI: manage WireGuard services (interfaces), users (p
 generate QR codes for easy client setup. Single admin password, no other accounts.
 
 Stack: one Go binary (standard library + `go-qrcode`) serving a REST API and a small
-dependency-free HTML/JS frontend (embedded). Uses `wg` and `ip` on the host (no `wg-quick`), so it
-doesn't need root, only the `CAP_NET_ADMIN` capability.
+dependency-free HTML/JS frontend (embedded). Native installs manage `wg-quick@<interface>.service` through systemd and polkit. The UI runs
+as the unprivileged `vibeguard` user. Containers without systemd use `wg` and `ip` directly
+with `CAP_NET_ADMIN`. IPv4-only, IPv6-only, and dual-stack interfaces are supported.
 
 ## Configuration (environment variables)
 
 | Variable | Default | Description |
 |---|---|---|
-| `VIBEGUARD_ADMIN_PASSWORD` | required | Admin password |
+| `VIBEGUARD_ADMIN_PASSWORD` | required on first start | Bootstrap admin password; a password changed in the UI takes precedence |
+| `VIBEGUARD_PASSWORD_FILE` | `admin-password.json` beside the data file | Persisted salted PBKDF2-SHA256 password hash (private, mode 0600) |
+| `VIBEGUARD_SYSTEMD` | `auto` | `auto` detects systemd; `1` requires it, `0` uses direct interface management |
 | `VIBEGUARD_LISTEN` | `:8080` | Listen address |
 | `VIBEGUARD_DATA` | `/var/lib/vibeguard/data.json` | State file (contains keys, keep private) |
-| `VIBEGUARD_WG_DIR` | `/etc/wireguard` | Where `<name>.conf` files are written (the systemd unit sets `/var/lib/vibeguard/wireguard`) |
-| `VIBEGUARD_MDNS_UPSTREAM` | unset (disabled) | Upstream/LAN interface (e.g. `eth0`). Enables the mDNS repeater |
+| `VIBEGUARD_WG_DIR` | `/var/lib/vibeguard/wireguard` with systemd; `/etc/wireguard` otherwise | Where `<name>.conf` files are written. Systemd mode requires the managed path expected by the installed helper |
+| `VIBEGUARD_MDNS_UPSTREAM` | unset (disabled) | Bootstrap comma-separated LAN interfaces, e.g. `eth0,eth1`. Saved UI settings override this value |
 
 Put the UI behind HTTPS (e.g. a reverse proxy) when exposing it beyond a trusted network.
 
 
 ## mDNS repeater
 
-With `VIBEGUARD_MDNS_UPSTREAM` set, mDNS (224.0.0.251:5353) is reflected between that interface and all
-running WireGuard services, so VPN clients can resolve `.local` names:
-queries from VPN users are re-sent on the upstream network, and mDNS traffic from the upstream is
-forwarded as unicast to each VPN user (and between VPN users). Clients must route traffic to
-`224.0.0.251` through the tunnel (the default `0.0.0.0/0` allowed IPs do; otherwise add `224.0.0.251/32`).
-Requires `NET_ADMIN` and host networking (`network_mode: host` in Docker) so the LAN interface is visible.
+Use **Settings → mDNS repeater** to enable discovery and choose one or more LAN interfaces and
+WireGuard interfaces. Selections are saved in the state file and apply without restarting.
+Only selected, running interfaces forward traffic. Removing the last selected VPN interface
+disables the repeater. `VIBEGUARD_MDNS_UPSTREAM` bootstraps the old behavior (all VPN interfaces)
+until settings are first saved.
+
+The repeater supports IPv4 (`224.0.0.251:5353`) and IPv6 (`[ff02::fb]:5353`): LAN multicast is
+forwarded as unicast to VPN peers, peer traffic is reflected onto selected LANs, and discovery
+is shared between selected VPN peers. Deselected interfaces leave the multicast groups.
+Clients need routes for `224.0.0.251/32` and `ff02::fb/128`; full-tunnel routes for each family include
+them. Docker needs host networking so LAN interfaces are visible. A disabled/unavailable address
+family is logged; the other family continues independently.
+
+## Password changes
+
+Use **Settings → Change password**, enter the current password and a new password of at least
+12 characters, and sign in again. The saved salted hash overrides the bootstrap environment password
+on future starts. Every existing session is invalidated. Keep the password file in backups along
+with `data.json`; it is never returned by the API. To reset a forgotten password, stop VibeGuard,
+remove only the saved password file, set a new bootstrap password in `/etc/vibeguard.env`, and
+restart. Do not remove the WireGuard state file.
+
+## IPv6 and dual stack
+
+Enter one CIDR per family, for example `10.8.0.1/24, fd00:8::1/64`, or just `fd00:8::1/64` for IPv6-only.
+Peers receive a unique `/32` and/or `/128` from the configured subnets. IPv6 has no broadcast address.
+Public IPv6 endpoints must include brackets: `[2001:db8::1]:51820`. Client DNS and allowed routes can
+also contain IPv6 addresses/CIDRs. Default allowed routes cover only the service's configured families.
+Existing IPv4 state files remain compatible.
+
+Native installation enables IPv4 and IPv6 forwarding. Route the VPN prefixes on the upstream router
+and allow the relevant UDP/forwarded traffic in your firewall. VibeGuard does not add NAT/NAT66 rules
+or provision an IPv6 prefix. If the uplink gets its IPv6 route via router advertisements, configure
+`net.ipv6.conf.<uplink>.accept_ra=2` on that host when enabling forwarding.
+
 
 ## Run
 
-    VIBEGUARD_ADMIN_PASSWORD=secret go run .      # needs root (or CAP_NET_ADMIN) + wireguard-tools to start services
+    VIBEGUARD_ADMIN_PASSWORD='<bootstrap-password>' go run .
+
+Native systemd hosts need the installation below before interface control works. For direct-mode
+development, set `VIBEGUARD_SYSTEMD=0`; starting interfaces requires `CAP_NET_ADMIN` and wireguard-tools.
 
 ## Docker
 
@@ -52,17 +87,41 @@ Run `make help` for the full list.
 
 `make install` copies the binary to `/usr/local/bin` (override with `PREFIX=`/`BINDIR=`) and the unit
 to `/etc/systemd/system`. It also writes `/etc/vibeguard.env` with a random admin password if that
-file doesn't exist yet, enables `net.ipv4.ip_forward`, and runs `systemctl enable --now vibeguard`.
-Install `wireguard-tools` on the host first. If `DESTDIR` is set, only the files are staged.
+file doesn't exist yet, enables IPv4/IPv6 forwarding, and enables and restarts the VibeGuard service.
+Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 polkitd`). If `DESTDIR` is set, only the files are staged.
 
 **Service user.** `make install` asks which user to run as (default `vibeguard`) and creates it as a
 system user if it doesn't exist. To skip the prompt, e.g. in scripts, pass `VIBEGUARD_USER=<name>`;
-without a terminal it uses the default. The service doesn't need root: the unit grants only
-`CAP_NET_ADMIN`, to manage WireGuard interfaces, and `CAP_NET_BIND_SERVICE`, so `VIBEGUARD_LISTEN`
-can use a port below 1024. It also sets `NoNewPrivileges`. systemd creates `/var/lib/vibeguard` and
-makes the user its owner (`StateDirectory=`); service configs are written to
-`/var/lib/vibeguard/wireguard`. `/etc/vibeguard.env` stays owned by root, since systemd reads it
-before dropping privileges.
+without a terminal it uses the default. The service stays unprivileged (`User=vibeguard`, `NoNewPrivileges=yes`), with only
+`CAP_NET_BIND_SERVICE` for optional low HTTP ports. systemd creates `/var/lib/vibeguard` owned by
+that user (`StateDirectory=`); generated configs are private files under
+`/var/lib/vibeguard/wireguard`. `/etc/vibeguard.env` remains root-owned.
+
+`make install` also installs:
+
+- `/etc/polkit-1/rules.d/50-vibeguard.rules`: authorizes the chosen service account to manage
+  `wg-quick@*.service` units and enable/disable unit files. systemd does not supply per-unit details
+  for the unit-file action, so that action intentionally permits managing other unit files too.
+  It does not grant general command execution or daemon-reload. No sudo password or root UI is needed.
+- `/usr/local/libexec/vibeguard-wg-quick` and a `wg-quick@.service` drop-in: root-owned integration
+  that reads the managed configs, enables multicast on managed VPN interfaces, and reloads peers
+  using `wg syncconf` without dropping connections. Unmanaged units continue using `/etc/wireguard`.
+  Conflicting configs in both locations cause an explicit error rather than replacing host files.
+
+Starting an interface runs `systemctl --no-ask-password enable --no-reload --now wg-quick@<name>.service`.
+Stopping or deleting it runs `disable --no-reload --now`; restart also enables it at boot.
+The UI shows running and boot status independently, and reports systemd errors instead of hiding them.
+`--no-reload` avoids requiring daemon-reload authorization; installation performs the one-time reload
+as root. Enabled interfaces start independently of the UI on subsequent boots.
+
+When upgrading from direct interface management (or PR #3), stop the old VPN interfaces before
+installing to avoid an already-existing interface conflict. Preserve `/var/lib/vibeguard` and
+`/etc/vibeguard.env`, run `make install`, and start desired interfaces in the UI once to enable
+boot startup. If upgrading PR #3's `/etc/wireguard` configuration layout, move each managed config
+into `/var/lib/vibeguard/wireguard` (owned by the service user, directory 0700/files 0600), or remove
+only redundant generated copies after backing them up. Do not overwrite unrelated host configs.
+`make uninstall` keeps the helper and wg-quick drop-in so enabled tunnels continue working; disable
+those units before manually removing their integration files.
 
     sudo make install                          # prompts, default: vibeguard
     sudo make install VIBEGUARD_USER=wgadmin   # no prompt
@@ -259,3 +318,13 @@ container's bridge interface (e.g. `eth0`) for `VIBEGUARD_MDNS_UPSTREAM`.
 ## Test
 
     go test ./...
+    go test -race ./...
+    go vet ./...
+
+Tests cover password persistence/session invalidation, systemd lifecycle and failure responses
+(with a fake systemctl), IPv6/dual-stack allocation, mDNS family/selection routing, multicast
+membership changes, and the privileged helper using isolated paths and fake wg/ip executables.
+On a native systemd test host, additionally verify that Start marks `wg-quick@wg0` active and enabled,
+Stop makes it inactive and disabled, peer edits reload without losing the interface, and an enabled
+interface returns after reboot with the UI still running as `vibeguard`. Actual tunnel traffic and
+LAN discovery require a WireGuard-capable host and clients.

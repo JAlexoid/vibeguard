@@ -37,9 +37,20 @@ func QRPNG(content string) ([]byte, error) {
 	return qrcode.Encode(content, qrcode.Medium, 512)
 }
 
-// Runner applies service configuration to the host using wg and ip. It avoids wg-quick,
-// which insists on running as root, so the service only needs CAP_NET_ADMIN.
-type Runner struct{ Dir string }
+// Runner uses systemd on native installations and wg/ip in containers.
+type Runner struct {
+	Dir     string
+	Systemd bool
+	// command is overridden by tests; production executes native tools directly.
+	command func(string, ...string) error
+}
+
+func (r Runner) run(name string, args ...string) error {
+	if r.command != nil {
+		return r.command(name, args...)
+	}
+	return run(name, args...)
+}
 
 func (r Runner) confPath(name string) string { return filepath.Join(r.Dir, name+".conf") }
 
@@ -47,7 +58,10 @@ func (r Runner) Write(s Service, users []User) error {
 	if err := os.MkdirAll(r.Dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(r.confPath(s.Name), []byte(ServerConfig(s, users)), 0o600)
+	if !nameRe.MatchString(s.Name) {
+		return fmt.Errorf("invalid interface name")
+	}
+	return atomicWrite(r.confPath(s.Name), []byte(ServerConfig(s, users)))
 }
 
 func run(name string, args ...string) error { return runIn("", name, args...) }
@@ -99,10 +113,19 @@ func (r Runner) readConf(name string) (string, []string, error) {
 }
 
 func (r Runner) Active(name string) bool {
+	if r.Systemd {
+		return r.systemctl("is-active", "--quiet", unitName(name)) == nil
+	}
 	return exec.Command("wg", "show", name).Run() == nil
 }
 
 func (r Runner) Start(name string) error {
+	if r.Systemd {
+		return r.systemctl("enable", "--no-reload", "--now", unitName(name))
+	}
+	if r.Active(name) {
+		return nil
+	}
 	wg, addrs, err := r.readConf(name)
 	if err != nil {
 		return err
@@ -136,10 +159,37 @@ func (r Runner) configure(name, wg string, addrs []string) error {
 	return run("ip", "link", "set", "dev", name, "multicast", "on", "up")
 }
 
-func (r Runner) Stop(name string) error { return run("ip", "link", "del", "dev", name) }
+func (r Runner) Stop(name string) error {
+	if r.Systemd {
+		return r.systemctl("disable", "--no-reload", "--now", unitName(name))
+	}
+	if !r.Active(name) {
+		return nil
+	}
+	return r.run("ip", "link", "del", "dev", name)
+}
+
+func (r Runner) Restart(name string) error {
+	if r.Systemd {
+		if err := r.systemctl("enable", "--no-reload", unitName(name)); err != nil {
+			return err
+		}
+		return r.systemctl("restart", unitName(name))
+	}
+	if err := r.Stop(name); err != nil {
+		return err
+	}
+	return r.Start(name)
+}
 
 // Sync pushes peer changes into a running interface without dropping it.
 func (r Runner) Sync(name string) error {
+	if r.Systemd {
+		if !r.Active(name) {
+			return nil
+		}
+		return r.systemctl("reload", unitName(name))
+	}
 	if !r.Active(name) {
 		return nil
 	}
