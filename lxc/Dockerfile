@@ -19,7 +19,7 @@ COPY lxc/vibeguard.service lxc/vibeguard-firstboot.service /etc/systemd/system/
 COPY lxc/vibeguard-firstboot /usr/local/sbin/vibeguard-firstboot
 COPY systemd/vibeguard-wg-quick /usr/local/libexec/vibeguard-wg-quick
 COPY systemd/wg-quick-vibeguard.conf /etc/systemd/system/wg-quick@.service.d/vibeguard.conf
-COPY systemd/50-vibeguard.rules /etc/polkit-1/rules.d/50-vibeguard.rules
+COPY --chmod=0644 systemd/50-vibeguard.rules /etc/polkit-1/rules.d/50-vibeguard.rules
 RUN chmod 755 /usr/local/libexec/vibeguard-wg-quick
 RUN useradd --system --user-group --home-dir /var/lib/vibeguard --no-create-home \
       --shell /usr/sbin/nologin vibeguard \

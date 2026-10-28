@@ -92,3 +92,49 @@ func TestPrivilegedHelper(t *testing.T) {
 		t.Fatal("invalid helper request executed a privileged command")
 	}
 }
+
+func TestInstallerRejectsMissingPolkitBeforeWritingFiles(t *testing.T) {
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make unavailable")
+	}
+	dir := t.TempDir()
+	// Leave only wg-quick on PATH: having WireGuard or policy files alone must
+	// not pass the polkit prerequisite check and start modifying the host.
+	if err := os.WriteFile(filepath.Join(dir, "wg-quick"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(makePath, "--assume-old=/bin/true", "install", "BINARY=/bin/true")
+	cmd.Env = append(os.Environ(), "PATH="+dir)
+	output, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "Missing polkitd") {
+		t.Fatalf("installer did not diagnose missing polkitd: %v\n%s", err, output)
+	}
+}
+
+func TestInstallerRequiresRunningPolkit(t *testing.T) {
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make unavailable")
+	}
+	for _, tc := range []struct{ fail, want string }{{"start", "Cannot start polkit.service"}, {"is-active", "polkit.service must be running"}} {
+		t.Run(tc.fail, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, name := range []string{"wg-quick", "pkaction", "pkcheck"} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fake := "#!/bin/sh\nif [ \"$1\" = " + tc.fail + " ]; then exit 1; fi\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(fake), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(makePath, "--assume-old=/bin/true", "install", "BINARY=/bin/true")
+			cmd.Env = append(os.Environ(), "PATH="+dir)
+			output, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), tc.want) {
+				t.Fatalf("installer ignored daemon failure: %v\n%s", err, output)
+			}
+		})
+	}
+}

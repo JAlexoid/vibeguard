@@ -32,6 +32,9 @@ cp /opt/vibeguard-src/lxc/vibeguard.service /etc/systemd/system/
 install -Dm755 systemd/vibeguard-wg-quick /usr/local/libexec/vibeguard-wg-quick
 install -Dm644 systemd/wg-quick-vibeguard.conf /etc/systemd/system/wg-quick@.service.d/vibeguard.conf
 install -Dm644 systemd/50-vibeguard.rules /etc/polkit-1/rules.d/50-vibeguard.rules
+systemctl start polkit.service
+systemctl is-active --quiet polkit.service
+sh systemd/check-polkit vibeguard
 sysctl -p /etc/sysctl.d/99-vibeguard.conf
 systemctl daemon-reload
 systemctl enable --now vibeguard

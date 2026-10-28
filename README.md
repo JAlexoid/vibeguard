@@ -8,6 +8,25 @@ dependency-free HTML/JS frontend (embedded). Native installs manage `wg-quick@<i
 as the unprivileged `vibeguard` user. Containers without systemd use `wg` and `ip` directly
 with `CAP_NET_ADMIN`. IPv4-only, IPv6-only, and dual-stack interfaces are supported.
 
+## Dependencies
+
+- Go 1.24 or newer to build the binary.
+- Native Linux deployment: systemd, **polkitd (installed and running)**, wireguard-tools, and iproute2.
+  On Debian 12/13 or Ubuntu with modern polkit:
+
+  ```sh
+  sudo apt-get update
+  sudo apt-get install polkitd wireguard-tools iproute2
+  sudo systemctl start polkit.service
+  sudo systemctl is-active polkit.service
+  ```
+
+`make install` checks for the actual polkit tools, starts `polkit.service`, verifies it is active,
+and checks the installed rule authorizes the service account. It fails with an actionable error
+if a prerequisite is missing; the presence of `/usr/share/polkit-1` alone is insufficient.
+Both LXC installation paths install `polkitd`; the systemd unit starts it before VibeGuard.
+Docker deployments without systemd use direct interface management and do not need polkit.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Description |
@@ -113,6 +132,40 @@ Stopping or deleting it runs `disable --no-reload --now`; restart also enables i
 The UI shows running and boot status independently, and reports systemd errors instead of hiding them.
 `--no-reload` avoids requiring daemon-reload authorization; installation performs the one-time reload
 as root. Enabled interfaces start independently of the UI on subsequent boots.
+
+If interface startup reports `Failed to enable unit: Access denied`, check the installed
+service account and polkit rule, rather than changing VibeGuard to root:
+
+```sh
+systemctl show vibeguard -p User -p NoNewPrivileges
+sudo stat -c '%U:%G %a %n' /etc/polkit-1/rules.d/50-vibeguard.rules
+pkaction --version
+sudo make check-polkit                 # VIBEGUARD_USER=... for a custom account
+sudo journalctl -u polkit -b --no-pager -n 40
+```
+
+The rule must name the account in the installed unit and be root-owned **0644**, not 0600:
+polkit reads JavaScript rules as its own unprivileged user. Do not change the permissions or
+ownership of the `rules.d` directory; distributions can deliberately keep it private to polkitd.
+To reinstall the default rule and reload it without changing the UI account:
+
+```sh
+sudo install -o root -g root -m 0644 systemd/50-vibeguard.rules /etc/polkit-1/rules.d/50-vibeguard.rules
+sudo systemctl restart polkit.service
+sudo make check-polkit
+```
+
+Use the rule rendered by `make install VIBEGUARD_USER=...` when using a custom account.
+The installer now verifies that the actual polkit tools/authority are present and that the chosen
+account is authorized before starting VibeGuard. Some legacy polkit 0.105 backends use `.pkla`
+instead of JavaScript `.rules`; use a supported modern polkit backend for this integration.
+
+A real-daemon regression test can run in a disposable Docker container (no privileged mode):
+
+```sh
+docker build -f tests/polkit/Dockerfile -t vibeguard-polkit-test .
+docker run --rm vibeguard-polkit-test
+```
 
 When upgrading from direct interface management (or PR #3), stop the old VPN interfaces before
 installing to avoid an already-existing interface conflict. Preserve `/var/lib/vibeguard` and

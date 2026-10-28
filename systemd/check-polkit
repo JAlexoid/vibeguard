@@ -1,0 +1,33 @@
+#!/bin/sh
+# Check the same account/action used by systemctl enable. This authorizes a
+# hypothetical request only: it does not enable, start, or otherwise change units.
+set -eu
+user=${1:-vibeguard}
+if [ "$(id -u)" -ne 0 ]; then
+ echo 'Run this check as root so it can impersonate the service account.' >&2
+ exit 1
+fi
+if [ "$user" = root ]; then
+ echo 'The VibeGuard service must use an unprivileged account, not root.' >&2
+ exit 1
+fi
+id "$user" >/dev/null
+for command in pkaction pkcheck runuser; do
+ command -v "$command" >/dev/null || { echo "Missing $command; install polkitd and util-linux." >&2; exit 1; }
+done
+if ! pkaction --action-id org.freedesktop.systemd1.manage-unit-files >/dev/null; then
+ echo 'The polkit authority or systemd policy is unavailable. Check polkit.service and the system bus.' >&2
+ exit 1
+fi
+# File monitors reload newly installed rules asynchronously.
+for attempt in 1 2 3 4 5; do
+ if runuser -u "$user" -- sh -c 'exec pkcheck --action-id org.freedesktop.systemd1.manage-unit-files --process "$$"' 2>/dev/null; then
+  echo "Polkit authorizes $user to manage unit files."
+  exit 0
+ fi
+ [ "$attempt" -eq 5 ] || sleep 1
+done
+echo "Polkit denied unit-file management for $user. No systemd units were changed by this check." >&2
+echo 'Check that the installed rule names the service account, is root-owned and mode 0644, and that polkit loaded it.' >&2
+echo 'Inspect: journalctl -u polkit -b --no-pager. Legacy polkit 0.105 backends may not support JavaScript .rules files.' >&2
+exit 1

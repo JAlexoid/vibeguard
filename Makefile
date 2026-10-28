@@ -35,7 +35,7 @@ endif
 LXC_TEMPLATE ?= $(DIST)/vibeguard-debian-12_$(VERSION)_$(LXC_ARCH).tar.$(LXC_EXT)
 
 .PHONY: all build test vet fmt run clean help \
-        install uninstall \
+        install uninstall check-polkit \
         docker-build docker-up docker-down \
         lxc-template
 
@@ -66,7 +66,9 @@ clean: ## Remove build outputs
 install: $(BINARY) ## Install binary + systemd unit and start it (run as root)
 ifeq ($(DESTDIR),)
 	@command -v wg-quick >/dev/null || { echo "Install wireguard-tools first" >&2; exit 1; }
-	@test -d /usr/share/polkit-1 || { echo "Install polkitd first" >&2; exit 1; }
+	@command -v pkaction >/dev/null && command -v pkcheck >/dev/null || { echo "Missing polkitd: install polkitd (including pkaction and pkcheck) first" >&2; exit 1; }
+	@systemctl start polkit.service || { echo "Cannot start polkit.service; check that polkitd is installed and inspect its journal" >&2; exit 1; }
+	@systemctl is-active --quiet polkit.service || { echo "polkit.service must be running before installing VibeGuard" >&2; exit 1; }
 endif
 	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/vibeguard
 	@mkdir -p $(DIST)
@@ -91,6 +93,7 @@ endif
 	install -Dm644 /dev/null $(DESTDIR)$(SYSCTL)
 	printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > $(DESTDIR)$(SYSCTL)
 ifeq ($(DESTDIR),)
+	sh systemd/check-polkit "$$(sed -n 's/^User=//p' $(DIST)/vibeguard.service)"
 	sh lxc/vibeguard-firstboot $(ENV_FILE)
 	sysctl -q -p $(SYSCTL)
 	systemctl daemon-reload
@@ -99,6 +102,9 @@ ifeq ($(DESTDIR),)
 	@command -v wg >/dev/null || echo "WARNING: wireguard-tools (wg) not found; install it."
 	@echo "VibeGuard installed. Admin password is in $(ENV_FILE); UI on :8080 by default."
 endif
+
+check-polkit: ## Check installed polkit authorization without changing any units (run as root)
+	sh systemd/check-polkit $(if $(VIBEGUARD_USER),$(VIBEGUARD_USER),vibeguard)
 
 uninstall: ## Stop and remove the binary + unit (keeps data and password)
 ifeq ($(DESTDIR),)
