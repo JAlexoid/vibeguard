@@ -112,7 +112,7 @@ func TestInstallerRejectsMissingPolkitBeforeWritingFiles(t *testing.T) {
 	dir := t.TempDir()
 	// Leave only network tools on PATH: having WireGuard or policy files alone must
 	// not pass the polkit prerequisite check and start modifying the host.
-	for _, tool := range []string{"wg-quick", "iptables", "ip6tables", "sysctl"} {
+	for _, tool := range []string{"avahi-daemon", "wg-quick", "iptables", "ip6tables", "sysctl"} {
 		if err := os.WriteFile(filepath.Join(dir, tool), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +133,7 @@ func TestInstallerRequiresRunningPolkit(t *testing.T) {
 	for _, tc := range []struct{ fail, want string }{{"start", "Cannot start polkit.service"}, {"is-active", "polkit.service must be running"}} {
 		t.Run(tc.fail, func(t *testing.T) {
 			dir := t.TempDir()
-			for _, name := range []string{"wg-quick", "pkaction", "pkcheck", "iptables", "ip6tables", "sysctl"} {
+			for _, name := range []string{"avahi-daemon", "wg-quick", "pkaction", "pkcheck", "iptables", "ip6tables", "sysctl"} {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 					t.Fatal(err)
 				}

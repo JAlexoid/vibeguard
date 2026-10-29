@@ -105,8 +105,8 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
-		if err := s.runner.MDNSFirewall(s.store.MDNS(s.mdnsDefaults)); err != nil {
-			fail(w, 500, fmt.Errorf("mDNS settings saved, but firewall update failed: %w", err))
+		if err := s.runner.MDNSReflector(s.store.MDNS(s.mdnsDefaults)); err != nil {
+			fail(w, 500, fmt.Errorf("mDNS settings saved, but Avahi update failed: %w", err))
 			return
 		}
 		writeJSON(w, 200, s.store.MDNS(s.mdnsDefaults))
@@ -149,8 +149,8 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if cfg := s.store.MDNS(s.mdnsDefaults); cfg.Enabled {
-			if err := s.runner.MDNSFirewall(cfg); err != nil {
-				fail(w, 500, fmt.Errorf("interface saved, but mDNS firewall update failed: %w", err))
+			if err := s.runner.MDNSReflector(cfg); err != nil {
+				fail(w, 500, fmt.Errorf("interface saved, but mDNS Avahi update failed: %w", err))
 				return
 			}
 		}
@@ -206,8 +206,8 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if oldMDNS.Enabled || s.store.MDNS(s.mdnsDefaults).Enabled {
-			if err := s.runner.MDNSFirewall(s.store.MDNS(s.mdnsDefaults)); err != nil {
-				fail(w, 500, fmt.Errorf("service deleted, but mDNS firewall update failed: %w", err))
+			if err := s.runner.MDNSReflector(s.store.MDNS(s.mdnsDefaults)); err != nil {
+				fail(w, 500, fmt.Errorf("service deleted, but mDNS Avahi update failed: %w", err))
 				return
 			}
 		}
@@ -313,8 +313,8 @@ type errString string
 func (e errString) Error() string { return string(e) }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "mdns-firewall" {
-		if err := runMDNSFirewallCommand(os.Args[2:]); err != nil {
+	if len(os.Args) > 1 && os.Args[1] == "avahi" {
+		if err := runAvahiCommand(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -341,8 +341,8 @@ func main() {
 	if runner.Systemd && filepath.Clean(runner.Dir) != "/var/lib/vibeguard/wireguard" {
 		log.Fatal("systemd mode requires VIBEGUARD_WG_DIR=/var/lib/vibeguard/wireguard (the installed wg-quick helper path)")
 	}
-	reflector := NewReflector(os.Getenv("VIBEGUARD_MDNS_UPSTREAM"), st)
-	srv := &Server{store: st, runner: runner, auth: auth, mdnsDefaults: reflector.defaults}
+	defaults := mdnsDefaults(os.Getenv("VIBEGUARD_MDNS_UPSTREAM"))
+	srv := &Server{store: st, runner: runner, auth: auth, mdnsDefaults: defaults}
 	for _, v := range st.Services() {
 		if err := srv.runner.Write(v, st.Users(v.Name)); err != nil {
 			log.Printf("write %s: %v", v.Name, err)
@@ -351,18 +351,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if !runner.Systemd {
-		if err := runner.MDNSFirewall(st.MDNS(reflector.defaults)); err != nil {
-			log.Printf("mDNS firewall startup: %v", err)
+		if err := runner.MDNSReflector(st.MDNS(defaults)); err != nil {
+			log.Printf("Avahi startup: %v", err)
 		}
 	}
-	go func() {
-		for ctx.Err() == nil {
-			if err := reflector.RunContext(ctx); err != nil {
-				log.Printf("mdns reflector: %v", err)
-			}
-			time.Sleep(5 * time.Second)
-		}
-	}()
 	addr := env("VIBEGUARD_LISTEN", ":8080")
 	log.Printf("vibeguard listening on %s", addr)
 	httpServer := &http.Server{Addr: addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -383,8 +375,8 @@ func main() {
 		log.Printf("HTTP shutdown: %v", err)
 	}
 	if !runner.Systemd {
-		if err := runner.MDNSFirewall(MDNSSettings{}); err != nil {
-			log.Printf("mDNS firewall shutdown: %v", err)
+		if err := runner.MDNSReflector(MDNSSettings{}); err != nil {
+			log.Printf("Avahi shutdown: %v", err)
 		}
 	}
 	if serveErr != nil {

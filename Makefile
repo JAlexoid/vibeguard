@@ -67,10 +67,12 @@ install: $(BINARY) ## Install binary + systemd unit and start it (run as root)
 ifeq ($(DESTDIR),)
 	@command -v sysctl >/dev/null || { echo "Install procps (sysctl) first" >&2; exit 1; }
 	@command -v iptables >/dev/null && command -v ip6tables >/dev/null || { echo "Install iptables (IPv4 and IPv6 tools) first" >&2; exit 1; }
+	@command -v avahi-daemon >/dev/null || { echo "Install avahi-daemon first" >&2; exit 1; }
 	@command -v wg-quick >/dev/null || { echo "Install wireguard-tools first" >&2; exit 1; }
 	@command -v pkaction >/dev/null && command -v pkcheck >/dev/null || { echo "Missing polkitd: install polkitd (including pkaction and pkcheck) first" >&2; exit 1; }
 	@systemctl start polkit.service || { echo "Cannot start polkit.service; check that polkitd is installed and inspect its journal" >&2; exit 1; }
 	@systemctl is-active --quiet polkit.service || { echo "polkit.service must be running before installing VibeGuard" >&2; exit 1; }
+	-systemctl stop vibeguard-mdns-firewall.service
 endif
 	install -Dm755 $(BINARY) $(DESTDIR)$(BINDIR)/vibeguard
 	@mkdir -p $(DIST)
@@ -88,8 +90,8 @@ endif
 	  lxc/vibeguard.service > $(DIST)/vibeguard.service; \
 	  sed "s|subject.user !== \"vibeguard\"|subject.user !== \"$$user\"|" systemd/50-vibeguard.rules > $(DIST)/50-vibeguard.rules
 	install -Dm644 $(DIST)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard.service
-	sed 's|/usr/local/bin/vibeguard|$(BINDIR)/vibeguard|g' systemd/vibeguard-mdns-firewall.service > $(DIST)/vibeguard-mdns-firewall.service
-	install -Dm644 $(DIST)/vibeguard-mdns-firewall.service $(DESTDIR)$(UNITDIR)/vibeguard-mdns-firewall.service
+	sed 's|/usr/local/bin/vibeguard|$(BINDIR)/vibeguard|g' systemd/vibeguard-avahi.service > $(DIST)/vibeguard-avahi.service
+	install -Dm644 $(DIST)/vibeguard-avahi.service $(DESTDIR)$(UNITDIR)/vibeguard-avahi.service
 	sed 's|/usr/local/libexec|$(LIBEXECDIR)|g' systemd/vibeguard-wg-quick > $(DIST)/vibeguard-wg-quick
 	install -Dm755 $(DIST)/vibeguard-wg-quick $(DESTDIR)$(LIBEXECDIR)/vibeguard-wg-quick
 	install -Dm755 systemd/vibeguard-network $(DESTDIR)$(LIBEXECDIR)/vibeguard-network
@@ -103,6 +105,9 @@ ifeq ($(DESTDIR),)
 	sh systemd/check-polkit "$$(sed -n 's/^User=//p' $(DIST)/vibeguard.service)"
 	sh lxc/vibeguard-firstboot $(ENV_FILE)
 	sysctl -q -p $(SYSCTL)
+	-systemctl disable --now vibeguard-mdns-firewall.service
+	rm -f $(UNITDIR)/vibeguard-mdns-firewall.service
+	-systemctl disable --now avahi-daemon.socket avahi-daemon.service
 	systemctl daemon-reload
 	systemctl enable vibeguard.service
 	systemctl restart vibeguard.service
@@ -119,7 +124,7 @@ ifeq ($(DESTDIR),)
 endif
 	# Keep the wg-quick helper/drop-in: enabled tunnels must still start and stop
 	# after uninstalling the UI. Disable those units before removing these files.
-	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard-mdns-firewall.service $(DESTDIR)$(SYSCTL) $(DESTDIR)$(POLKITDIR)/50-vibeguard.rules
+	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard-avahi.service $(DESTDIR)$(SYSCTL) $(DESTDIR)$(POLKITDIR)/50-vibeguard.rules
 ifeq ($(DESTDIR),)
 	systemctl daemon-reload
 	@echo "Kept $(DATA_DIR), $(ENV_FILE) and the service user; remove them manually to wipe all state."
