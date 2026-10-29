@@ -11,11 +11,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       systemd systemd-sysv ifupdown isc-dhcp-client iproute2 iptables procps \
-      wireguard-tools openresolv ca-certificates polkitd \
+      wireguard-tools openresolv ca-certificates polkitd avahi-daemon \
  && apt-get clean && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/apt/apt.conf.d/docker-* /etc/dpkg/dpkg.cfg.d/docker*
 COPY --from=build /vibeguard /usr/local/bin/vibeguard
-COPY lxc/vibeguard.service lxc/vibeguard-firstboot.service systemd/vibeguard-mdns-firewall.service /etc/systemd/system/
+COPY lxc/vibeguard.service lxc/vibeguard-firstboot.service systemd/vibeguard-avahi.service /etc/systemd/system/
 COPY lxc/vibeguard-firstboot /usr/local/sbin/vibeguard-firstboot
 COPY systemd/vibeguard-wg-quick /usr/local/libexec/vibeguard-wg-quick
 COPY systemd/vibeguard-network /usr/local/libexec/vibeguard-network
@@ -26,5 +26,6 @@ RUN chmod 755 /usr/local/libexec/vibeguard-wg-quick /usr/local/libexec/vibeguard
 RUN useradd --system --user-group --home-dir /var/lib/vibeguard --no-create-home \
       --shell /usr/sbin/nologin vibeguard \
  && printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > /etc/sysctl.d/99-vibeguard.conf \
+ && systemctl disable avahi-daemon.socket avahi-daemon.service \
  && systemctl enable vibeguard.service vibeguard-firstboot.service \
  && : > /etc/machine-id && rm -f /var/lib/dbus/machine-id

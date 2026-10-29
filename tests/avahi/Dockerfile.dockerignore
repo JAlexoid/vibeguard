@@ -1,0 +1,5 @@
+**
+!vibeguard
+!tests/
+!tests/avahi/
+!tests/avahi/check.sh

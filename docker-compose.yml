@@ -1,7 +1,7 @@
 services:
   vibeguard:
     build: .
-    # For the mDNS repeater use host networking and set VIBEGUARD_MDNS_UPSTREAM=<lan iface>
+    # For the Avahi reflector use host networking and set VIBEGUARD_MDNS_UPSTREAM=<lan iface>
     restart: unless-stopped
     cap_add: [NET_ADMIN]
     sysctls:

@@ -13,12 +13,12 @@ with `CAP_NET_ADMIN`. IPv4-only, IPv6-only, and dual-stack interfaces are suppor
 ## Dependencies
 
 - Go 1.24 or newer to build the binary.
-- Native Linux deployment: systemd, **polkitd (installed and running)**, wireguard-tools, iproute2, iptables (including ip6tables), and procps (sysctl).
+- Native Linux deployment: systemd, **polkitd (installed and running)**, wireguard-tools, iproute2, iptables (including ip6tables), procps (sysctl), and avahi-daemon.
   On Debian 12/13 or Ubuntu with modern polkit:
 
   ```sh
   sudo apt-get update
-  sudo apt-get install polkitd wireguard-tools iproute2 iptables procps
+  sudo apt-get install polkitd avahi-daemon wireguard-tools iproute2 iptables procps
   sudo systemctl start polkit.service
   sudo systemctl is-active polkit.service
   ```
@@ -44,44 +44,42 @@ Docker deployments without systemd use direct interface management and do not ne
 Put the UI behind HTTPS (e.g. a reverse proxy) when exposing it beyond a trusted network.
 
 
-## mDNS repeater
+## Avahi mDNS reflector
 
-Use **Settings → mDNS repeater** to enable discovery and choose one or more LAN interfaces and
-WireGuard interfaces. Selections are saved in the state file and apply without restarting.
-Only selected, running interfaces forward traffic. Removing the last selected VPN interface
-disables the repeater. `VIBEGUARD_MDNS_UPSTREAM` bootstraps the old behavior (all VPN interfaces)
-until settings are first saved.
+Install `avahi-daemon` and use **Settings → Avahi mDNS reflector** to select LAN and
+WireGuard interfaces. Existing discovery selections are preserved. Saving settings restarts
+`vibeguard-avahi.service` through polkit; VibeGuard stays unprivileged. The dedicated
+Avahi process reads a generated configuration, supports IPv4 and IPv6, allows point-to-point
+interfaces, and disables service publishing and D-Bus. Disabling discovery stops the process.
+No VibeGuard restart is needed.
 
-The repeater supports IPv4 (`224.0.0.251:5353`) and IPv6 (`[ff02::fb]:5353`): LAN multicast is
-forwarded as unicast to VPN peers, peer traffic is reflected onto selected LANs, and discovery
-is shared between selected VPN peers. Deselected interfaces leave the multicast groups.
-Clients need routes for `224.0.0.251/32` and `ff02::fb/128`; full-tunnel routes for each family include
-them. Docker needs host networking so LAN interfaces are visible. A disabled/unavailable address
-family is logged; the other family continues independently.
+`make install` and both LXC installers install/configure the dedicated service. It replaces
+the host's stock `avahi-daemon.service` and socket, which are disabled to prevent competing
+responders. Other applications relying on Avahi publishing or D-Bus should use a separate host.
+Docker includes Avahi and starts/stops it directly; use host networking to expose LAN interfaces
+and avoid running another Avahi daemon in the same network namespace.
 
-With managed firewall rules enabled, saving discovery settings also updates **IPv4 and IPv6
-INPUT/OUTPUT rules** for the selected interfaces. INPUT allows UDP destination port 5353;
-OUTPUT allows UDP source/destination port 5353, covering both multicast queries and unicast
-relays. No other UDP ports or unselected interfaces are opened. Deselection or disabling the
-repeater removes its old allowances. These rules are separate from VPN FORWARD/NAT rules.
+Avahi reflects multicast between selected interfaces; it does not rewrite advertised addresses
+or send a unicast copy to each VPN peer. Clients need routes and WireGuard AllowedIPs for
+`224.0.0.251/32` and `ff02::fb/128`. WireGuard selects one peer per destination, so a shared
+multi-peer interface cannot fan multicast out to every peer. Use separate tunnels or a multicast
+transport when discovery must reach multiple peers. NAT alone does not solve multicast delivery
+or make advertised LAN addresses reachable; clients need routing to those addresses.
 
-Native installs use the root-owned `vibeguard-mdns-firewall.service` oneshot, authorized through
-polkit; the UI keeps running as `vibeguard` without NET_ADMIN. The oneshot reads the saved settings,
-restores rules before the UI starts, and clears them when the UI service stops. Docker/direct
-mode uses its existing NET_ADMIN capability and cleans up on graceful shutdown. Install the
-updated unit and polkit rule once with `make install`; subsequent UI changes need no restart.
-A failed firewall update is reported by the settings API instead of silently claiming success.
-`VIBEGUARD_MANAGE_FIREWALL=0` opts out of both gateway and mDNS rule management. After changing
-that flag in the root-owned environment file, save discovery settings again to apply it to mDNS.
-
-Check the mDNS rules on the host/container:
+VibeGuard no longer opens UDP 5353 or manages mDNS INPUT/OUTPUT rules. Configure your host
+firewall to permit discovery on the selected interfaces if needed. VPN forwarding/NAT management
+is unchanged. When upgrading, stop the old service **before installing the new binary** so its
+old cleanup command removes its rules:
 
 ```sh
-sudo iptables -S VGM_INPUT
-sudo iptables -S VGM_OUTPUT
-sudo ip6tables -S VGM_INPUT
-sudo ip6tables -S VGM_OUTPUT
+sudo systemctl stop vibeguard.service vibeguard-mdns-firewall.service
+sudo make install
+sudo systemctl status vibeguard-avahi.service
+sudo journalctl -u vibeguard-avahi.service -b
 ```
+
+If the old service is already gone, remove only the old `VGM_INPUT`/`VGM_OUTPUT` jumps and
+chains from IPv4/IPv6 filter tables, or reboot if those rules were not persisted.
 
 ## Password changes
 
@@ -124,7 +122,7 @@ Native/LXC configuration is in the root-owned `/etc/vibeguard-network.env` (pres
 | Setting | Default | Behavior |
 |---|---|---|
 | `VIBEGUARD_EGRESS_INTERFACE` | `auto` | Use the default-route uplink for each family, falling back to the other family's uplink. Set e.g. `eth0` explicitly for multi-uplink hosts. |
-| `VIBEGUARD_MANAGE_FIREWALL` | `1` | Set `0` to manage gateway and mDNS firewall rules yourself. IP forwarding remains enabled. |
+| `VIBEGUARD_MANAGE_FIREWALL` | `1` | Set `0` to manage gateway firewall rules yourself. IP forwarding remains enabled. |
 | `VIBEGUARD_NAT` | `1` | IPv4 masquerading; set `0` when the upstream router routes the VPN subnet. |
 | `VIBEGUARD_NAT66` | `0` | Set `1` for IPv6 masquerading. |
 
@@ -181,7 +179,7 @@ Run `make help` for the full list.
 `make install` copies the binary to `/usr/local/bin` (override with `PREFIX=`/`BINDIR=`) and the unit
 to `/etc/systemd/system`. It also writes `/etc/vibeguard.env` with a random admin password if that
 file doesn't exist yet, enables IPv4/IPv6 forwarding, and enables and restarts the VibeGuard service.
-Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 iptables procps polkitd`). If `DESTDIR` is set, only the files are staged.
+Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 iptables procps polkitd avahi-daemon`). If `DESTDIR` is set, only the files are staged.
 
 **Service user.** `make install` asks which user to run as (default `vibeguard`) and creates it as a
 system user if it doesn't exist. To skip the prompt, e.g. in scripts, pass `VIBEGUARD_USER=<name>`;
@@ -309,7 +307,7 @@ Or download a published template directly on the host (see [Downloading a releas
     lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file
     CONF
 
-**5. Optional: enable the mDNS repeater** before the first start, so that VPN clients can resolve
+**5. Optional: enable the Avahi mDNS reflector** before the first start, so that VPN clients can resolve
 `.local` names on the LAN. Create the env file yourself (the first-boot service won't overwrite it):
 
     pct mount 120
@@ -466,8 +464,7 @@ container's bridge interface (e.g. `eth0`) for `VIBEGUARD_MDNS_UPSTREAM`.
     go vet ./...
 
 Tests cover password persistence/session invalidation, systemd lifecycle and failure responses
-(with a fake systemctl), IPv6/dual-stack allocation, mDNS family/selection routing, multicast
-membership changes, and the privileged helper using isolated paths and fake wg/ip executables.
+(with a fake systemctl), IPv6/dual-stack allocation, Avahi configuration and selection, and the privileged helper using isolated paths and fake wg/ip executables.
 On a native systemd test host, additionally verify that Start marks `wg-quick@wg0` active and enabled,
 Stop makes it inactive and disabled, peer edits reload without losing the interface, and an enabled
 interface returns after reboot with the UI still running as `vibeguard`. Actual tunnel traffic and
@@ -484,6 +481,12 @@ docker run --rm --cap-add NET_ADMIN \
 
 The test adds addresses and firewall rules only inside the disposable container's network namespace.
 It checks forwarding rules, IPv4 NAT, optional NAT66, idempotency, and removal while preserving
-unrelated rules. It also sends real IPv4/IPv6 UDP 5353 packets through INPUT/OUTPUT with terminal
-DROP rules and verifies deselection blocks those packets again. It does not test a complete
-WireGuard client tunnel.
+unrelated rules. It does not test a complete WireGuard client tunnel.
+
+An isolated Avahi startup check validates the generated config against Debian 13's real daemon:
+
+```sh
+CGO_ENABLED=0 go build -o vibeguard .
+docker build -f tests/avahi/Dockerfile -t vibeguard-avahi-test .
+docker run --rm vibeguard-avahi-test
+```

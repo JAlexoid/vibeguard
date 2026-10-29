@@ -1,0 +1,16 @@
+[Unit]
+Description=VibeGuard Avahi mDNS reflector
+Wants=network-online.target
+After=network-online.target
+Before=vibeguard.service
+PartOf=vibeguard.service
+Conflicts=avahi-daemon.service avahi-daemon.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+EnvironmentFile=-/etc/vibeguard.env
+RuntimeDirectory=vibeguard-avahi
+ExecStart=/usr/local/bin/vibeguard avahi
+ExecStop=/usr/local/bin/vibeguard avahi --stop

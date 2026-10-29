@@ -70,10 +70,7 @@ func TestNetworkToolProcess(t *testing.T) {
 		rules := state.Tables[tool+"/"+table]
 		entry, exists := rules[chain]
 		rest := args[5:]
-		if os.Getenv("VG_NETWORK_TEST_FAIL_MDNS") == "1" && tool == "ip6tables" && op == "-A" && chain == "VGM_OUTPUT" {
-			status = 4
-			break
-		}
+
 		if os.Getenv("VG_NETWORK_TEST_FAIL_NAT") == "1" && op == "-A" && table == "nat" {
 			status = 4
 			break
@@ -165,9 +162,6 @@ func networkFixture(t *testing.T) (func(string, ...string) error, func() firewal
 	}
 	run := func(action string, extra ...string) error {
 		args := []string{"systemd/vibeguard-network", action, "wg0"}
-		if strings.HasPrefix(action, "mdns") {
-			args = append([]string{"systemd/vibeguard-network"}, strings.Fields(action)...)
-		}
 		cmd := exec.Command("bash", args...)
 		cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "VG_NETWORK_TEST_TOOL=1", "VG_NETWORK_TEST_BINARY="+binary, "VG_NETWORK_TEST_STATE="+statePath)
 		cmd.Env = append(cmd.Env, extra...)
@@ -281,57 +275,5 @@ func TestGatewayCleanupReportsPermissionErrors(t *testing.T) {
 	}
 	if !reflect.DeepEqual(baseline, read().Tables) {
 		t.Fatal("failed cleanup touched unrelated rules")
-	}
-}
-
-func TestMDNSFirewallSelectionAndCleanup(t *testing.T) {
-	run, read := networkFixture(t)
-	baseline := read().Tables
-	if err := run("mdns eth0 wg0"); err != nil {
-		t.Fatal(err)
-	}
-	first := read().Tables
-	for _, tool := range []string{"iptables", "ip6tables"} {
-		filter := first[tool+"/filter"]
-		wantIn := [][]string{{"-i", "eth0", "-p", "udp", "--dport", "5353", "-j", "ACCEPT"}, {"-i", "wg0", "-p", "udp", "--dport", "5353", "-j", "ACCEPT"}}
-		wantOut := [][]string{{"-o", "eth0", "-p", "udp", "--sport", "5353", "--dport", "5353", "-j", "ACCEPT"}, {"-o", "wg0", "-p", "udp", "--sport", "5353", "--dport", "5353", "-j", "ACCEPT"}}
-		if !reflect.DeepEqual(filter["VGM_INPUT"], wantIn) || !reflect.DeepEqual(filter["VGM_OUTPUT"], wantOut) {
-			t.Fatalf("unexpected %s mDNS allowances: %v", tool, filter)
-		}
-	}
-	if err := run("mdns eth0 wg0"); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(first, read().Tables) {
-		t.Fatal("repeat mDNS application duplicated rules")
-	}
-	if err := run("mdns eth1 wg1"); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(fmt.Sprint(read().Tables), "-i wg0") || strings.Contains(fmt.Sprint(read().Tables), "-o eth0") {
-		t.Fatal("deselected interfaces still allowed")
-	}
-	if err := run("mdns"); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(baseline, read().Tables) {
-		t.Fatal("mDNS cleanup changed unrelated firewall rules")
-	}
-	if err := run("mdns eth0 wg0", "VIBEGUARD_MANAGE_FIREWALL=0"); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(baseline, read().Tables) {
-		t.Fatal("mDNS firewall opt-out ignored")
-	}
-}
-
-func TestMDNSFirewallRollsBackBothFamilies(t *testing.T) {
-	run, read := networkFixture(t)
-	baseline := read().Tables
-	if err := run("mdns eth0 wg0", "VG_NETWORK_TEST_FAIL_MDNS=1"); err == nil {
-		t.Fatal("expected partial IPv6 update failure")
-	}
-	if !reflect.DeepEqual(baseline, read().Tables) {
-		t.Fatal("mDNS failure left partial allowances or changed unrelated rules", read().Tables)
 	}
 }

@@ -32,12 +32,12 @@ sleep 5
 printf 'VIBEGUARD_ADMIN_PASSWORD=%s\n' "$PASSWORD" | pct exec "$CTID" -- bash -c 'umask 077; cat > /etc/vibeguard.env'
 pct exec "$CTID" -- bash -c "
 set -e
-apt-get update && apt-get install -y wireguard-tools iptables procps golang-go git ca-certificates openresolv iproute2 polkitd
+apt-get update && apt-get install -y wireguard-tools iptables procps golang-go git ca-certificates openresolv iproute2 polkitd avahi-daemon
 git clone $REPO /opt/vibeguard-src
 cd /opt/vibeguard-src && go build -o /usr/local/bin/vibeguard .
 id -u vibeguard >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/vibeguard --no-create-home --shell /usr/sbin/nologin vibeguard
 printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > /etc/sysctl.d/99-vibeguard.conf
-cp /opt/vibeguard-src/lxc/vibeguard.service systemd/vibeguard-mdns-firewall.service /etc/systemd/system/
+cp /opt/vibeguard-src/lxc/vibeguard.service systemd/vibeguard-avahi.service /etc/systemd/system/
 install -Dm755 systemd/vibeguard-wg-quick /usr/local/libexec/vibeguard-wg-quick
 install -Dm755 systemd/vibeguard-network /usr/local/libexec/vibeguard-network
 install -Dm644 systemd/vibeguard-network.env /etc/vibeguard-network.env
@@ -47,6 +47,7 @@ systemctl start polkit.service
 systemctl is-active --quiet polkit.service
 sh systemd/check-polkit vibeguard
 sysctl -p /etc/sysctl.d/99-vibeguard.conf
+systemctl disable --now avahi-daemon.socket avahi-daemon.service || true
 systemctl daemon-reload
 systemctl enable --now vibeguard
 "

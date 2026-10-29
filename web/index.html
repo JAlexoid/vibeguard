@@ -45,9 +45,9 @@
  </div>
  <div id="settingsPanel" hidden>
  <section class="card">
-  <span class="eyebrow">LOCAL DISCOVERY</span><h2>mDNS repeater</h2><p class="muted">Share .local discovery between selected LAN interfaces and VPN peers over IPv4 and IPv6. Changes apply without restarting VibeGuard.</p>
+  <span class="eyebrow">LOCAL DISCOVERY</span><h2>Avahi mDNS reflector</h2><p class="muted">Reflect multicast discovery between selected LAN and VPN interfaces over IPv4 and IPv6. WireGuard multicast routing must be configured; see the README. Changes apply without restarting VibeGuard.</p>
   <form id="mdnsForm">
-   <label class="check"><input id="mdnsEnabled" type="checkbox"> Enable mDNS repeater</label>
+   <label class="check"><input id="mdnsEnabled" type="checkbox"> Enable Avahi mDNS reflector</label>
    <div class="settings-grid"><fieldset><legend>LAN interfaces</legend><div id="mdnsUpstreams"></div></fieldset><fieldset><legend>VPN interfaces</legend><div id="mdnsServices"></div></fieldset></div>
    <p class="muted">Select at least one of each. Only running VPN interfaces forward traffic. Clients must route 224.0.0.251/32 and ff02::fb/128 through their tunnel; the default routes include both.</p>
    <button>Save discovery settings</button>

@@ -2,53 +2,6 @@
 # Interface-scoped gateway rules, called with CAP_NET_ADMIN (or by systemd).
 # All shared chains/policies and unrelated firewall rules are preserved.
 set -euo pipefail
-# mDNS is a local UDP relay: its packets traverse INPUT/OUTPUT, not FORWARD.
-mdns_cleanup_family() {
- local tool=$1 parent chain status
- for parent in INPUT OUTPUT; do
-  chain=VGM_$parent
-  if "$tool" -w -t filter -S "$chain" >/dev/null 2>&1; then
-   while "$tool" -w -t filter -C "$parent" -j "$chain" >/dev/null 2>&1; do
-    "$tool" -w -t filter -D "$parent" -j "$chain" || return
-   done
-   "$tool" -w -t filter -F "$chain" || return
-   "$tool" -w -t filter -X "$chain" || return
-  else
-   status=$?
-   if (( status != 1 )); then echo "$tool cannot inspect mDNS rules (exit $status)" >&2; return "$status"; fi
-  fi
- done
-}
-mdns_cleanup() {
- local tool result=0
- for tool in iptables ip6tables; do
-  if command -v "$tool" >/dev/null; then mdns_cleanup_family "$tool" || result=1; fi
- done
- return "$result"
-}
-if [[ ${1:-} == mdns ]]; then
- shift
- for name in "$@"; do
-  [[ $name =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}$ ]] || { echo 'Invalid mDNS interface name' >&2; exit 2; }
- done
- [[ ${VIBEGUARD_MANAGE_FIREWALL:-1} =~ ^[01]$ ]] || exit 2
- mdns_cleanup
- [[ $# != 0 && ${VIBEGUARD_MANAGE_FIREWALL:-1} == 1 ]] || exit 0
- trap 'status=$?; if (( status != 0 )); then mdns_cleanup || true; fi; exit "$status"' EXIT
- for tool in iptables ip6tables; do
-  [[ $tool != ip6tables || -e /proc/net/if_inet6 ]] || continue
-  command -v "$tool" >/dev/null || { echo "$tool is required for the mDNS firewall" >&2; exit 1; }
-  "$tool" -w -t filter -N VGM_INPUT
-  "$tool" -w -t filter -N VGM_OUTPUT
-  for name in "$@"; do
-   "$tool" -w -t filter -A VGM_INPUT -i "$name" -p udp --dport 5353 -j ACCEPT
-   "$tool" -w -t filter -A VGM_OUTPUT -o "$name" -p udp --sport 5353 --dport 5353 -j ACCEPT
-  done
-  "$tool" -w -t filter -I INPUT 1 -j VGM_INPUT
-  "$tool" -w -t filter -I OUTPUT 1 -j VGM_OUTPUT
- done
- exit 0
-fi
 [[ $# == 2 ]] || exit 2
 action=$1
 iface=$2

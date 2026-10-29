@@ -2,19 +2,15 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 func request(t *testing.T, s *Server, method, path, body, token string) *httptest.ResponseRecorder {
@@ -30,6 +26,7 @@ func request(t *testing.T, s *Server, method, path, body, token string) *httptes
 }
 func featureServer(t *testing.T) *Server {
 	t.Helper()
+	t.Setenv("VIBEGUARD_AVAHI_CONFIG", filepath.Join(t.TempDir(), "avahi.conf"))
 	st, err := NewStore(filepath.Join(t.TempDir(), "data.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +36,7 @@ func featureServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	return &Server{store: st, auth: a, runner: Runner{Dir: t.TempDir(), command: func(name string, args ...string) error {
-		if filepath.Base(name) == "vibeguard-network" {
+		if filepath.Base(name) == "vibeguard-network" || name == "avahi-daemon" {
 			return nil
 		}
 		return errors.New("unexpected command: " + name)
@@ -294,56 +291,6 @@ func TestSystemdEnableAndReloadFailures(t *testing.T) {
 		t.Fatal("inactive unit was reloaded", f.commands)
 	}
 }
-func TestMDNSRoutingFamiliesAndSelections(t *testing.T) {
-	cfg := MDNSSettings{Enabled: true, Upstreams: []string{"lan0", "lan1"}, Services: []string{"wg0"}}
-	users := []User{{Service: "wg0", Address: "10.8.0.2/32, fd00::2/128"}, {Service: "wg0", Address: "fd00::3/128"}, {Service: "wg1", Address: "10.9.0.2/32, fd01::2/128"}}
-	for _, test := range []struct {
-		in, source string
-		v6         bool
-		want       []mdnsTarget
-	}{
-		{"lan0", "192.0.2.5", false, []mdnsTarget{{"lan1", netip.MustParseAddr("224.0.0.251")}, {"wg0", netip.MustParseAddr("10.8.0.2")}}},
-		{"lan0", "fe80::5", true, []mdnsTarget{{"lan1", netip.MustParseAddr("ff02::fb")}, {"wg0", netip.MustParseAddr("fd00::2")}, {"wg0", netip.MustParseAddr("fd00::3")}}},
-		{"wg0", "fd00::2", true, []mdnsTarget{{"lan0", netip.MustParseAddr("ff02::fb")}, {"lan1", netip.MustParseAddr("ff02::fb")}, {"wg0", netip.MustParseAddr("fd00::3")}}},
-		{"wg1", "fd01::2", true, nil},
-	} {
-		got := reflectTargets(cfg, users, test.in, netip.MustParseAddr(test.source), test.v6)
-		if !reflect.DeepEqual(got, test.want) {
-			t.Fatalf("%s IPv6=%v: got %v want %v", test.in, test.v6, got, test.want)
-		}
-	}
-	cfg.Enabled = false
-	if got := reflectTargets(cfg, users, "lan0", netip.MustParseAddr("192.0.2.5"), false); len(got) != 0 {
-		t.Fatal("disabled repeater forwards traffic")
-	}
-}
-func TestMDNSMembershipLeavesDeselectedInterfaces(t *testing.T) {
-	ifcs, err := net.Interfaces()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var chosen net.Interface
-	for _, ifc := range ifcs {
-		if ifc.Flags&net.FlagUp != 0 {
-			chosen = ifc
-			break
-		}
-	}
-	if chosen.Name == "" {
-		t.Skip("no up interface")
-	}
-	joins, leaves := 0, 0
-	sock := mdnsSocket{join: func(*net.Interface, net.Addr) error { joins++; return nil }, leave: func(*net.Interface, net.Addr) error { leaves++; return nil }}
-	m := &Reflector{}
-	joined := map[int]net.Interface{}
-	cfg := MDNSSettings{Enabled: true, Upstreams: []string{chosen.Name}}
-	m.refresh(sock, &net.UDPAddr{}, joined, cfg)
-	m.refresh(sock, &net.UDPAddr{}, joined, cfg)
-	m.refresh(sock, &net.UDPAddr{}, joined, MDNSSettings{})
-	if joins != 1 || leaves != 1 || len(joined) != 0 {
-		t.Fatalf("memberships: joins %d leaves %d", joins, leaves)
-	}
-}
 func TestMDNSSettingsPersistence(t *testing.T) {
 	s := featureServer(t)
 	token := s.auth.Token()
@@ -382,22 +329,6 @@ func TestMDNSSettingsPersistence(t *testing.T) {
 		t.Fatal("repeater still enabled without selected VPN service")
 	}
 }
-func TestMDNSDisabledContextCancellation(t *testing.T) {
-	st, _ := NewStore(filepath.Join(t.TempDir(), "d.json"))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	done := make(chan error, 1)
-	go func() { done <- NewReflector("", st).RunContext(ctx) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("disabled repeater did not stop")
-	}
-}
-
 func TestDefaultRoutesMatchAddressFamilies(t *testing.T) {
 	for _, tc := range []struct{ addr, want string }{{"10.8.0.1/24", "0.0.0.0/0"}, {"fd00::1/64", "::/0"}, {"10.8.0.1/24, fd00::1/64", "0.0.0.0/0, ::/0"}} {
 		st, _ := NewStore(filepath.Join(t.TempDir(), "data.json"))
