@@ -38,7 +38,12 @@ func featureServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{store: st, auth: a, runner: Runner{Dir: t.TempDir()}}
+	return &Server{store: st, auth: a, runner: Runner{Dir: t.TempDir(), command: func(name string, args ...string) error {
+		if filepath.Base(name) == "vibeguard-network" {
+			return nil
+		}
+		return errors.New("unexpected command: " + name)
+	}}}
 }
 func TestPasswordChangePersistenceAndSessions(t *testing.T) {
 	s := featureServer(t)

@@ -37,7 +37,7 @@ git clone $REPO /opt/vibeguard-src
 cd /opt/vibeguard-src && go build -o /usr/local/bin/vibeguard .
 id -u vibeguard >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/vibeguard --no-create-home --shell /usr/sbin/nologin vibeguard
 printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' > /etc/sysctl.d/99-vibeguard.conf
-cp /opt/vibeguard-src/lxc/vibeguard.service /etc/systemd/system/
+cp /opt/vibeguard-src/lxc/vibeguard.service systemd/vibeguard-mdns-firewall.service /etc/systemd/system/
 install -Dm755 systemd/vibeguard-wg-quick /usr/local/libexec/vibeguard-wg-quick
 install -Dm755 systemd/vibeguard-network /usr/local/libexec/vibeguard-network
 install -Dm644 systemd/vibeguard-network.env /etc/vibeguard-network.env

@@ -88,6 +88,8 @@ endif
 	  lxc/vibeguard.service > $(DIST)/vibeguard.service; \
 	  sed "s|subject.user !== \"vibeguard\"|subject.user !== \"$$user\"|" systemd/50-vibeguard.rules > $(DIST)/50-vibeguard.rules
 	install -Dm644 $(DIST)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard.service
+	sed 's|/usr/local/bin/vibeguard|$(BINDIR)/vibeguard|g' systemd/vibeguard-mdns-firewall.service > $(DIST)/vibeguard-mdns-firewall.service
+	install -Dm644 $(DIST)/vibeguard-mdns-firewall.service $(DESTDIR)$(UNITDIR)/vibeguard-mdns-firewall.service
 	sed 's|/usr/local/libexec|$(LIBEXECDIR)|g' systemd/vibeguard-wg-quick > $(DIST)/vibeguard-wg-quick
 	install -Dm755 $(DIST)/vibeguard-wg-quick $(DESTDIR)$(LIBEXECDIR)/vibeguard-wg-quick
 	install -Dm755 systemd/vibeguard-network $(DESTDIR)$(LIBEXECDIR)/vibeguard-network
@@ -117,7 +119,7 @@ ifeq ($(DESTDIR),)
 endif
 	# Keep the wg-quick helper/drop-in: enabled tunnels must still start and stop
 	# after uninstalling the UI. Disable those units before removing these files.
-	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(SYSCTL) $(DESTDIR)$(POLKITDIR)/50-vibeguard.rules
+	rm -f $(DESTDIR)$(BINDIR)/vibeguard $(DESTDIR)$(UNITDIR)/vibeguard.service $(DESTDIR)$(UNITDIR)/vibeguard-mdns-firewall.service $(DESTDIR)$(SYSCTL) $(DESTDIR)$(POLKITDIR)/50-vibeguard.rules
 ifeq ($(DESTDIR),)
 	systemctl daemon-reload
 	@echo "Kept $(DATA_DIR), $(ENV_FILE) and the service user; remove them manually to wipe all state."

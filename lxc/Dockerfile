@@ -15,7 +15,7 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/apt/apt.conf.d/docker-* /etc/dpkg/dpkg.cfg.d/docker*
 COPY --from=build /vibeguard /usr/local/bin/vibeguard
-COPY lxc/vibeguard.service lxc/vibeguard-firstboot.service /etc/systemd/system/
+COPY lxc/vibeguard.service lxc/vibeguard-firstboot.service systemd/vibeguard-mdns-firewall.service /etc/systemd/system/
 COPY lxc/vibeguard-firstboot /usr/local/sbin/vibeguard-firstboot
 COPY systemd/vibeguard-wg-quick /usr/local/libexec/vibeguard-wg-quick
 COPY systemd/vibeguard-network /usr/local/libexec/vibeguard-network
