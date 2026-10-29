@@ -1,0 +1,15 @@
+[Unit]
+Description=VibeGuard mDNS relay firewall rules
+Wants=network-online.target
+After=network-online.target
+Before=vibeguard.service
+PartOf=vibeguard.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+EnvironmentFile=-/etc/vibeguard.env
+EnvironmentFile=-/etc/vibeguard-network.env
+ExecStart=/usr/local/bin/vibeguard mdns-firewall
+ExecStop=/usr/local/bin/vibeguard mdns-firewall --clear

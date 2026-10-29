@@ -5,13 +5,16 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -102,6 +105,10 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 400, err)
 			return
 		}
+		if err := s.runner.MDNSFirewall(s.store.MDNS(s.mdnsDefaults)); err != nil {
+			fail(w, 500, fmt.Errorf("mDNS settings saved, but firewall update failed: %w", err))
+			return
+		}
 		writeJSON(w, 200, s.store.MDNS(s.mdnsDefaults))
 	})
 	api.HandleFunc("GET /api/interfaces", func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +147,12 @@ func (s *Server) Handler() http.Handler {
 		if err := s.runner.Write(v, nil); err != nil {
 			fail(w, 500, err)
 			return
+		}
+		if cfg := s.store.MDNS(s.mdnsDefaults); cfg.Enabled {
+			if err := s.runner.MDNSFirewall(cfg); err != nil {
+				fail(w, 500, fmt.Errorf("interface saved, but mDNS firewall update failed: %w", err))
+				return
+			}
 		}
 		v.PrivateKey = ""
 		writeJSON(w, 201, v)
@@ -187,9 +200,16 @@ func (s *Server) Handler() http.Handler {
 			fail(w, 500, err)
 			return
 		}
+		oldMDNS := s.store.MDNS(s.mdnsDefaults)
 		if err := s.store.DeleteService(name); err != nil {
 			fail(w, 500, err)
 			return
+		}
+		if oldMDNS.Enabled || s.store.MDNS(s.mdnsDefaults).Enabled {
+			if err := s.runner.MDNSFirewall(s.store.MDNS(s.mdnsDefaults)); err != nil {
+				fail(w, 500, fmt.Errorf("service deleted, but mDNS firewall update failed: %w", err))
+				return
+			}
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
@@ -293,6 +313,12 @@ type errString string
 func (e errString) Error() string { return string(e) }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mdns-firewall" {
+		if err := runMDNSFirewallCommand(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	pw := os.Getenv("VIBEGUARD_ADMIN_PASSWORD")
 	st, err := NewStore(env("VIBEGUARD_DATA", "/var/lib/vibeguard/data.json"))
 	if err != nil {
@@ -322,9 +348,16 @@ func main() {
 			log.Printf("write %s: %v", v.Name, err)
 		}
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if !runner.Systemd {
+		if err := runner.MDNSFirewall(st.MDNS(reflector.defaults)); err != nil {
+			log.Printf("mDNS firewall startup: %v", err)
+		}
+	}
 	go func() {
-		for {
-			if err := reflector.RunContext(context.Background()); err != nil {
+		for ctx.Err() == nil {
+			if err := reflector.RunContext(ctx); err != nil {
 				log.Printf("mdns reflector: %v", err)
 			}
 			time.Sleep(5 * time.Second)
@@ -332,5 +365,29 @@ func main() {
 	}()
 	addr := env("VIBEGUARD_LISTEN", ":8080")
 	log.Printf("vibeguard listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, srv.Handler()))
+	httpServer := &http.Server{Addr: addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	failed := make(chan error, 1)
+	go func() { failed <- httpServer.ListenAndServe() }()
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case err := <-failed:
+		if !errors.Is(err, http.ErrServerClosed) {
+			serveErr = err
+		}
+	}
+	stop()
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdown); err != nil {
+		log.Printf("HTTP shutdown: %v", err)
+	}
+	if !runner.Systemd {
+		if err := runner.MDNSFirewall(MDNSSettings{}); err != nil {
+			log.Printf("mDNS firewall shutdown: %v", err)
+		}
+	}
+	if serveErr != nil {
+		log.Fatal(serveErr)
+	}
 }

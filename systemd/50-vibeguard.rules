@@ -7,7 +7,8 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.YES;
     }
     if (action.id === "org.freedesktop.systemd1.manage-units" &&
-        /^wg-quick@[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}\.service$/.test(action.lookup("unit") || "")) {
+        (action.lookup("unit") === "vibeguard-mdns-firewall.service" ||
+         /^wg-quick@[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}\.service$/.test(action.lookup("unit") || ""))) {
         return polkit.Result.YES;
     }
 });
