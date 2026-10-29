@@ -25,9 +25,18 @@ case "$action" in
     wg-quick down "$conf"
     exit 1
    fi
+   if ! /usr/local/libexec/vibeguard-network up "$name"; then
+    wg-quick down "$conf"
+    exit 1
+   fi
   fi
   ;;
- down) exec wg-quick down "$conf" ;;
+ down)
+  status=0
+  wg-quick down "$conf" || status=$?
+  if [ "$conf" = "$managed" ]; then /usr/local/libexec/vibeguard-network down "$name" || status=$?; fi
+  exit "$status"
+  ;;
  reload)
   tmp=$(mktemp /run/vibeguard-wg.XXXXXX)
   trap 'rm -f "$tmp"' EXIT HUP INT TERM

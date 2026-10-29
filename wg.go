@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -143,7 +144,16 @@ func (r Runner) Start(name string) error {
 		run("ip", "link", "del", "dev", name)
 		return err
 	}
+	if err := r.network("up", name); err != nil {
+		cleanupErr := r.network("down", name)
+		linkErr := r.run("ip", "link", "del", "dev", name)
+		return errors.Join(err, cleanupErr, linkErr)
+	}
 	return nil
+}
+
+func (r Runner) network(action, name string) error {
+	return r.run(env("VIBEGUARD_NETWORK_HELPER", "/usr/local/libexec/vibeguard-network"), action, name)
 }
 
 func (r Runner) configure(name, wg string, addrs []string) error {
@@ -163,10 +173,12 @@ func (r Runner) Stop(name string) error {
 	if r.Systemd {
 		return r.systemctl("disable", "--no-reload", "--now", unitName(name))
 	}
-	if !r.Active(name) {
-		return nil
+	if r.Active(name) {
+		if err := r.run("ip", "link", "del", "dev", name); err != nil {
+			return err
+		}
 	}
-	return r.run("ip", "link", "del", "dev", name)
+	return r.network("down", name)
 }
 
 func (r Runner) Restart(name string) error {

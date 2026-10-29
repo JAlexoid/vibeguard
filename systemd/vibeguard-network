@@ -1,0 +1,97 @@
+#!/bin/bash
+# Interface-scoped gateway rules, called with CAP_NET_ADMIN (or by systemd).
+# All shared chains/policies and unrelated firewall rules are preserved.
+set -euo pipefail
+[[ $# == 2 ]] || exit 2
+action=$1
+iface=$2
+[[ $iface =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}$ ]] || { echo 'Invalid interface name' >&2; exit 2; }
+[[ $action == up || $action == down ]] || exit 2
+filter=VGF_$iface
+nat=VGN_$iface
+
+cleanup_family() {
+ local tool=$1 status
+ # Only remove jumps and chains owned by this interface.
+ if "$tool" -w -t filter -S "$filter" >/dev/null 2>&1; then
+  while "$tool" -w -t filter -C FORWARD -i "$iface" -j "$filter" >/dev/null 2>&1; do
+   "$tool" -w -t filter -D FORWARD -i "$iface" -j "$filter" || return
+  done
+  while "$tool" -w -t filter -C FORWARD -o "$iface" -j "$filter" >/dev/null 2>&1; do
+   "$tool" -w -t filter -D FORWARD -o "$iface" -j "$filter" || return
+  done
+  "$tool" -w -t filter -F "$filter" || return
+  "$tool" -w -t filter -X "$filter" || return
+ else
+  status=$?
+  if (( status != 1 )); then echo "$tool cannot inspect filter rules (exit $status)" >&2; return "$status"; fi
+ fi
+ if "$tool" -w -t nat -S "$nat" >/dev/null 2>&1; then
+  while "$tool" -w -t nat -C POSTROUTING -j "$nat" >/dev/null 2>&1; do
+   "$tool" -w -t nat -D POSTROUTING -j "$nat" || return
+  done
+  "$tool" -w -t nat -F "$nat" || return
+  "$tool" -w -t nat -X "$nat" || return
+ else
+  status=$?
+  if (( status != 1 )); then echo "$tool cannot inspect NAT rules (exit $status)" >&2; return "$status"; fi
+ fi
+}
+cleanup() {
+ local result=0
+ for tool in iptables ip6tables; do
+  if command -v "$tool" >/dev/null; then cleanup_family "$tool" || result=1; fi
+ done
+ return "$result"
+}
+if [[ $action == down ]]; then cleanup; exit $?; fi
+
+for setting in VIBEGUARD_MANAGE_FIREWALL VIBEGUARD_NAT VIBEGUARD_NAT66; do
+ value=${!setting:-}
+ [[ -z $value || $value == 0 || $value == 1 ]] || { echo "$setting must be 0 or 1" >&2; exit 2; }
+done
+egress=${VIBEGUARD_EGRESS_INTERFACE:-auto}
+[[ $egress == auto || $egress =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}$ ]] || { echo 'Invalid egress interface' >&2; exit 2; }
+# Docker can expose read-only sysctls after setting them at container creation.
+if [[ $(sysctl -n net.ipv4.ip_forward) != 1 ]]; then sysctl -q -w net.ipv4.ip_forward=1; fi
+if [[ -e /proc/sys/net/ipv6/conf/all/forwarding && $(sysctl -n net.ipv6.conf.all.forwarding) != 1 ]]; then
+ sysctl -q -w net.ipv6.conf.all.forwarding=1
+fi
+# Rebuild only this interface's rules, making repeated starts/recovery idempotent.
+cleanup
+[[ ${VIBEGUARD_MANAGE_FIREWALL:-1} == 1 ]] || exit 0
+trap 'status=$?; if (( status != 0 )); then cleanup || true; fi; exit "$status"' EXIT
+for family in 4 6; do
+ tool=iptables
+ [[ $family == 4 ]] || tool=ip6tables
+ # ip's inet/inet6 column contains a CIDR; arguments are never evaluated as shell.
+ addresses=$(ip -o -"$family" address show dev "$iface" scope global)
+ mapfile -t prefixes < <(awk '{print $4}' <<< "$addresses" | sed '/^$/d' | sort -u)
+ (( ${#prefixes[@]} != 0 )) || continue
+ command -v "$tool" >/dev/null || { echo "$tool is required for IPv$family forwarding" >&2; exit 1; }
+ out=$egress
+ if [[ $out == auto ]]; then
+  out=$(ip -"$family" route show default | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1);exit}}')
+  if [[ -z $out ]]; then
+   other=4; [[ $family == 4 ]] && other=6
+   out=$(ip -"$other" route show default | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1);exit}}')
+  fi
+ fi
+ [[ -n $out && $out != "$iface" ]] || { echo "No uplink found for $iface; set VIBEGUARD_EGRESS_INTERFACE" >&2; exit 1; }
+ ip link show dev "$out" >/dev/null
+ "$tool" -w -t filter -N "$filter"
+ masquerade=${VIBEGUARD_NAT:-1}
+ [[ $family == 4 ]] || masquerade=${VIBEGUARD_NAT66:-0}
+ if [[ $masquerade == 1 ]]; then "$tool" -w -t nat -N "$nat"; fi
+ for prefix in "${prefixes[@]}"; do
+  "$tool" -w -t filter -A "$filter" -i "$iface" -o "$out" -s "$prefix" -j ACCEPT
+  "$tool" -w -t filter -A "$filter" -i "$out" -o "$iface" -d "$prefix" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  if [[ $masquerade == 1 ]]; then
+   "$tool" -w -t nat -A "$nat" -s "$prefix" -o "$out" -j MASQUERADE
+  fi
+ done
+ # Place narrow accept rules ahead of a host's terminal FORWARD reject/drop.
+ "$tool" -w -t filter -I FORWARD 1 -i "$iface" -j "$filter"
+ "$tool" -w -t filter -I FORWARD 1 -o "$iface" -j "$filter"
+ if [[ $masquerade == 1 ]]; then "$tool" -w -t nat -A POSTROUTING -j "$nat"; fi
+done

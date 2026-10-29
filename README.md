@@ -8,6 +8,25 @@ dependency-free HTML/JS frontend (embedded). Native installs manage `wg-quick@<i
 as the unprivileged `vibeguard` user. Containers without systemd use `wg` and `ip` directly
 with `CAP_NET_ADMIN`. IPv4-only, IPv6-only, and dual-stack interfaces are supported.
 
+## Dependencies
+
+- Go 1.24 or newer to build the binary.
+- Native Linux deployment: systemd, **polkitd (installed and running)**, wireguard-tools, iproute2, iptables (including ip6tables), and procps (sysctl).
+  On Debian 12/13 or Ubuntu with modern polkit:
+
+  ```sh
+  sudo apt-get update
+  sudo apt-get install polkitd wireguard-tools iproute2 iptables procps
+  sudo systemctl start polkit.service
+  sudo systemctl is-active polkit.service
+  ```
+
+`make install` checks for the actual polkit tools, starts `polkit.service`, verifies it is active,
+and checks the installed rule authorizes the service account. It fails with an actionable error
+if a prerequisite is missing; the presence of `/usr/share/polkit-1` alone is insufficient.
+Both LXC installation paths install `polkitd`; the systemd unit starts it before VibeGuard.
+Docker deployments without systemd use direct interface management and do not need polkit.
+
 ## Configuration (environment variables)
 
 | Variable | Default | Description |
@@ -55,10 +74,58 @@ Public IPv6 endpoints must include brackets: `[2001:db8::1]:51820`. Client DNS a
 also contain IPv6 addresses/CIDRs. Default allowed routes cover only the service's configured families.
 Existing IPv4 state files remain compatible.
 
-Native installation enables IPv4 and IPv6 forwarding. Route the VPN prefixes on the upstream router
-and allow the relevant UDP/forwarded traffic in your firewall. VibeGuard does not add NAT/NAT66 rules
-or provision an IPv6 prefix. If the uplink gets its IPv6 route via router advertisements, configure
-`net.ipv6.conf.<uplink>.accept_ra=2` on that host when enabling forwarding.
+## Forwarding and NAT
+
+The native installer and both LXC paths persist IPv4/IPv6 forwarding in
+`/etc/sysctl.d/99-vibeguard.conf`. Docker Compose sets the equivalent container sysctls.
+Starting a managed VPN interface also checks forwarding and installs gateway rules:
+
+- IPv4: masquerade the interface's VPN subnet on the uplink, allowing peers to reach the
+  Internet/LAN without a return route on the upstream router.
+- IPv6: allow forwarding with established/related return traffic. By default, route the VPN's
+  IPv6 prefix on the upstream router; NAT66 is available when a routed prefix is unavailable.
+- Firewall rules accept traffic from the VPN subnet to the selected uplink and established/related
+  replies back to that subnet. Other firewall rules and default policies are preserved.
+
+Rules live in private `VGF_<interface>`/`VGN_<interface>` filter/NAT chains and are removed on Stop/Delete.
+They are restored by enabled `wg-quick` units on boot and rebuilt without duplicate rules on restart.
+Failures roll back the new rules and fail interface startup. The native UI remains `User=vibeguard`;
+its root-owned systemd helpers perform network administration. Existing unmanaged wg-quick instances
+keep their previous behavior.
+
+Native/LXC configuration is in the root-owned `/etc/vibeguard-network.env` (preserved by `make install`):
+
+| Setting | Default | Behavior |
+|---|---|---|
+| `VIBEGUARD_EGRESS_INTERFACE` | `auto` | Use the default-route uplink for each family, falling back to the other family's uplink. Set e.g. `eth0` explicitly for multi-uplink hosts. |
+| `VIBEGUARD_MANAGE_FIREWALL` | `1` | Set `0` to manage forwarding/firewall rules yourself. IP forwarding remains enabled. |
+| `VIBEGUARD_NAT` | `1` | IPv4 masquerading; set `0` when the upstream router routes the VPN subnet. |
+| `VIBEGUARD_NAT66` | `0` | Set `1` for IPv6 masquerading. |
+
+For example, set `VIBEGUARD_EGRESS_INTERFACE=eth0` in that file, then **restart the VPN interface**
+in the UI to apply changes. Also restart existing VPN interfaces once after upgrading to this
+version; restarting the UI alone does not reconfigure already-running tunnels. The same settings
+are process environment variables in Docker/direct mode. Docker images include the helper at
+`/usr/local/libexec/vibeguard-network`; local direct-mode development can select it using
+`VIBEGUARD_NETWORK_HELPER=./systemd/vibeguard-network` (make the file executable first).
+Direct mode requires `CAP_NET_ADMIN` and the firewall tools.
+
+Verify a running `wg0` on its host/container:
+
+```sh
+sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding  # both 1
+sudo iptables -S VGF_wg0
+sudo iptables -t nat -S VGN_wg0                       # IPv4 MASQUERADE
+sudo ip6tables -S VGF_wg0                            # when IPv6 is configured
+```
+
+IPv6 forwarding can disable router-advertisement learning on an uplink. If that interface receives
+its IPv6 default route through RAs, persist `net.ipv6.conf.<uplink>.accept_ra=2` on that host.
+VibeGuard does not provision an IPv6 prefix or change uplink RA settings. Publish/forward each
+WireGuard UDP port through any external firewall/router, and keep the management UI on a trusted
+network or behind HTTPS. Hosts with UFW/firewalld or another firewall manager should either integrate
+these narrowly scoped chains with that manager or set `VIBEGUARD_MANAGE_FIREWALL=0` and provide
+matching rules there; a firewall reload may remove dynamically installed rules.
 
 
 ## Run
@@ -88,7 +155,7 @@ Run `make help` for the full list.
 `make install` copies the binary to `/usr/local/bin` (override with `PREFIX=`/`BINDIR=`) and the unit
 to `/etc/systemd/system`. It also writes `/etc/vibeguard.env` with a random admin password if that
 file doesn't exist yet, enables IPv4/IPv6 forwarding, and enables and restarts the VibeGuard service.
-Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 polkitd`). If `DESTDIR` is set, only the files are staged.
+Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 iptables procps polkitd`). If `DESTDIR` is set, only the files are staged.
 
 **Service user.** `make install` asks which user to run as (default `vibeguard`) and creates it as a
 system user if it doesn't exist. To skip the prompt, e.g. in scripts, pass `VIBEGUARD_USER=<name>`;
@@ -113,6 +180,40 @@ Stopping or deleting it runs `disable --no-reload --now`; restart also enables i
 The UI shows running and boot status independently, and reports systemd errors instead of hiding them.
 `--no-reload` avoids requiring daemon-reload authorization; installation performs the one-time reload
 as root. Enabled interfaces start independently of the UI on subsequent boots.
+
+If interface startup reports `Failed to enable unit: Access denied`, check the installed
+service account and polkit rule, rather than changing VibeGuard to root:
+
+```sh
+systemctl show vibeguard -p User -p NoNewPrivileges
+sudo stat -c '%U:%G %a %n' /etc/polkit-1/rules.d/50-vibeguard.rules
+pkaction --version
+sudo make check-polkit                 # VIBEGUARD_USER=... for a custom account
+sudo journalctl -u polkit -b --no-pager -n 40
+```
+
+The rule must name the account in the installed unit and be root-owned **0644**, not 0600:
+polkit reads JavaScript rules as its own unprivileged user. Do not change the permissions or
+ownership of the `rules.d` directory; distributions can deliberately keep it private to polkitd.
+To reinstall the default rule and reload it without changing the UI account:
+
+```sh
+sudo install -o root -g root -m 0644 systemd/50-vibeguard.rules /etc/polkit-1/rules.d/50-vibeguard.rules
+sudo systemctl restart polkit.service
+sudo make check-polkit
+```
+
+Use the rule rendered by `make install VIBEGUARD_USER=...` when using a custom account.
+The installer now verifies that the actual polkit tools/authority are present and that the chosen
+account is authorized before starting VibeGuard. Some legacy polkit 0.105 backends use `.pkla`
+instead of JavaScript `.rules`; use a supported modern polkit backend for this integration.
+
+A real-daemon regression test can run in a disposable Docker container (no privileged mode):
+
+```sh
+docker build -f tests/polkit/Dockerfile -t vibeguard-polkit-test .
+docker run --rm vibeguard-polkit-test
+```
 
 When upgrading from direct interface management (or PR #3), stop the old VPN interfaces before
 installing to avoid an already-existing interface conflict. Preserve `/var/lib/vibeguard` and
@@ -193,9 +294,12 @@ Or download a published template directly on the host (see [Downloading a releas
 
     # If you skip this step, you can add the line to /etc/vibeguard.env later and run: pct exec 120 -- systemctl restart vibeguard
 
-**6. Start it and get the admin password:**
+**6. Start it, check polkit, and get the admin password:**
 
     pct start 120
+    pct exec 120 -- dpkg-query -W -f='${Status}\n' polkitd  # install ok installed
+    pct exec 120 -- systemctl is-active polkit.service        # active
+    pct exec 120 -- runuser -u vibeguard -- sh -c 'exec pkcheck --action-id org.freedesktop.systemd1.manage-unit-files --process "$$"'  # exit 0
     pct exec 120 -- cat /etc/vibeguard.env
     pct exec 120 -- systemctl is-active vibeguard     # active
 
@@ -259,8 +363,17 @@ step 2 of the [example deployment](#example-deployment-on-proxmox).
 
     ./lxc/vibeguard.sh <CTID> <admin-password> [storage]
 
-Creates a Debian 12 container with TUN access, builds VibeGuard and installs the
+Creates a **Debian 13** container with TUN access, builds VibeGuard and installs the
 `lxc/vibeguard.service` systemd unit. UI is at `http://<container-ip>:8080`.
+The script refreshes the Proxmox template catalog and selects the latest available
+`debian-13-standard_*_amd64.tar.zst` image. To choose a specific image, list the available
+Debian 13 templates with `pveam available --section system`, then pass its exact name:
+
+    TEMPLATE='<debian-13-template-name>' ./lxc/vibeguard.sh <CTID> <admin-password> [storage]
+
+This manual creation path installs `polkitd`, starts `polkit.service`, checks it is active,
+and verifies the `vibeguard` account is authorized before starting the UI. The Docker-built
+preinstalled template described above remains based on Debian 12.
 
 ### Unprivileged container requirements
 
@@ -299,11 +412,13 @@ Configuring TUN anyway keeps the container working if you add one later, and
 
 **3. Container features.**
 - `--unprivileged 1`: container root is mapped to an unprivileged host UID.
-- `--features nesting=1`: needed for systemd in Debian 12 containers to start cleanly (its
+- `--features nesting=1`: needed for systemd in Debian 12/13 containers to start cleanly (its
   sandboxing features need it). It is not used to run Docker or other containers inside.
 
-**4. IP forwarding.** `net.ipv4.ip_forward` is set per network namespace, so the container sets it
-itself (`/etc/sysctl.d/99-vibeguard.conf`); the host's setting doesn't matter.
+**4. Forwarding and NAT.** IPv4 and IPv6 forwarding are set in the container's network namespace
+via `/etc/sysctl.d/99-vibeguard.conf`. VPN startup installs scoped forwarding and IPv4 masquerade
+rules on its uplink; see [Forwarding and NAT](#forwarding-and-nat) for NAT66 and routed configurations.
+The Proxmox host and upstream router must also permit the container's outbound traffic.
 
 **5. Network.** Publish or forward each service's UDP `ListenPort` to the container's IP, and use the
 container's bridge interface (e.g. `eth0`) for `VIBEGUARD_MDNS_UPSTREAM`.
@@ -313,6 +428,9 @@ container's bridge interface (e.g. `eth0`) for `VIBEGUARD_MDNS_UPSTREAM`.
     pct exec <CTID> -- ls -l /dev/net/tun                                        # crw-rw-rw- ... nobody nogroup 10, 200
     pct exec <CTID> -- sh -c 'ip link add wgtest type wireguard && ip link del wgtest && echo kernel wireguard OK'
     pct exec <CTID> -- cat /proc/sys/net/ipv4/ip_forward                         # 1
+    pct exec <CTID> -- dpkg-query -W -f='${Status}\n' polkitd                # install ok installed
+    pct exec <CTID> -- systemctl is-active polkit.service                     # active
+    pct exec <CTID> -- runuser -u vibeguard -- sh -c 'exec pkcheck --action-id org.freedesktop.systemd1.manage-unit-files --process "$$"'  # exit 0
     pct exec <CTID> -- systemctl status vibeguard
 
 ## Test
@@ -328,3 +446,16 @@ On a native systemd test host, additionally verify that Start marks `wg-quick@wg
 Stop makes it inactive and disabled, peer edits reload without losing the interface, and an enabled
 interface returns after reboot with the UI still running as `vibeguard`. Actual tunnel traffic and
 LAN discovery require a WireGuard-capable host and clients.
+
+The networking helper also has an isolated Debian 13 integration check using real firewall tools:
+
+```sh
+docker build -f tests/network/Dockerfile -t vibeguard-network-test .
+docker run --rm --cap-add NET_ADMIN \
+  --sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
+  vibeguard-network-test
+```
+
+The test adds addresses and firewall rules only inside the disposable container's network namespace.
+It checks forwarding rules, IPv4 NAT, optional NAT66, idempotency, and removal while preserving an
+unrelated rule. It does not test a complete WireGuard client tunnel.
