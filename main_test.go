@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -78,7 +80,11 @@ func TestServiceUserQR(t *testing.T) {
 	}
 	buf.Reset()
 	r = do(t, c, "GET", ts.URL+"/api/users/"+id+"/config", "")
-	if got := r.Header.Get("Content-Disposition"); got != `attachment; filename="wg0@vpn.example.com.conf"` {
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Header.Get("Content-Disposition"); got != "attachment; filename="+strconv.Quote("wg0@"+hostname+".conf") {
 		t.Fatalf("download filename: %s", got)
 	}
 	buf.ReadFrom(r.Body)

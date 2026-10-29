@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,10 +34,10 @@ func ClientConfig(s Service, u User) string {
 	return b.String()
 }
 
-// ClientConfigFilename identifies the VPN interface and public endpoint host.
-// Keep names portable across desktop platforms, including IPv6 endpoints.
+// ClientConfigFilename identifies the VPN interface and this server's local hostname.
+// Keep names portable across desktop platforms.
 func ClientConfigFilename(s Service) string {
-	host, _, err := net.SplitHostPort(s.Endpoint)
+	host, err := os.Hostname()
 	if err != nil {
 		host = "server"
 	}
