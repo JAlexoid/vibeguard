@@ -250,23 +250,23 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
-	clientCfg := func(w http.ResponseWriter, r *http.Request) (string, User, bool) {
+	clientCfg := func(w http.ResponseWriter, r *http.Request) (string, Service, bool) {
 		u, ok := s.store.User(r.PathValue("id"))
 		if !ok {
 			fail(w, 404, errString("user not found"))
-			return "", u, false
+			return "", Service{}, false
 		}
 		svc, _ := s.store.Service(u.Service)
 		if svc.Endpoint == "" {
 			fail(w, 400, errString("service has no endpoint configured"))
-			return "", u, false
+			return "", Service{}, false
 		}
-		return ClientConfig(svc, u), u, true
+		return ClientConfig(svc, u), svc, true
 	}
 	api.HandleFunc("GET /api/users/{id}/config", func(w http.ResponseWriter, r *http.Request) {
-		if cfg, u, ok := clientCfg(w, r); ok {
+		if cfg, svc, ok := clientCfg(w, r); ok {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(u.Service+"-"+u.ID+".conf"))
+			w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(ClientConfigFilename(svc)))
 			w.Write([]byte(cfg))
 		}
 	})

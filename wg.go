@@ -34,6 +34,26 @@ func ClientConfig(s Service, u User) string {
 	return b.String()
 }
 
+// ClientConfigFilename identifies the VPN interface and this server's local hostname.
+// Keep names portable across desktop platforms.
+func ClientConfigFilename(s Service) string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "server"
+	}
+	host = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, host)
+	host = strings.Trim(host, ".-")
+	if host == "" {
+		host = "server"
+	}
+	return s.Name + "@" + host + ".conf"
+}
+
 func QRPNG(content string) ([]byte, error) {
 	return qrcode.Encode(content, qrcode.Medium, 512)
 }
