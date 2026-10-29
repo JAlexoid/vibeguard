@@ -11,12 +11,12 @@ with `CAP_NET_ADMIN`. IPv4-only, IPv6-only, and dual-stack interfaces are suppor
 ## Dependencies
 
 - Go 1.24 or newer to build the binary.
-- Native Linux deployment: systemd, **polkitd (installed and running)**, wireguard-tools, and iproute2.
+- Native Linux deployment: systemd, **polkitd (installed and running)**, wireguard-tools, iproute2, iptables (including ip6tables), and procps (sysctl).
   On Debian 12/13 or Ubuntu with modern polkit:
 
   ```sh
   sudo apt-get update
-  sudo apt-get install polkitd wireguard-tools iproute2
+  sudo apt-get install polkitd wireguard-tools iproute2 iptables procps
   sudo systemctl start polkit.service
   sudo systemctl is-active polkit.service
   ```
@@ -74,10 +74,58 @@ Public IPv6 endpoints must include brackets: `[2001:db8::1]:51820`. Client DNS a
 also contain IPv6 addresses/CIDRs. Default allowed routes cover only the service's configured families.
 Existing IPv4 state files remain compatible.
 
-Native installation enables IPv4 and IPv6 forwarding. Route the VPN prefixes on the upstream router
-and allow the relevant UDP/forwarded traffic in your firewall. VibeGuard does not add NAT/NAT66 rules
-or provision an IPv6 prefix. If the uplink gets its IPv6 route via router advertisements, configure
-`net.ipv6.conf.<uplink>.accept_ra=2` on that host when enabling forwarding.
+## Forwarding and NAT
+
+The native installer and both LXC paths persist IPv4/IPv6 forwarding in
+`/etc/sysctl.d/99-vibeguard.conf`. Docker Compose sets the equivalent container sysctls.
+Starting a managed VPN interface also checks forwarding and installs gateway rules:
+
+- IPv4: masquerade the interface's VPN subnet on the uplink, allowing peers to reach the
+  Internet/LAN without a return route on the upstream router.
+- IPv6: allow forwarding with established/related return traffic. By default, route the VPN's
+  IPv6 prefix on the upstream router; NAT66 is available when a routed prefix is unavailable.
+- Firewall rules accept traffic from the VPN subnet to the selected uplink and established/related
+  replies back to that subnet. Other firewall rules and default policies are preserved.
+
+Rules live in private `VGF_<interface>`/`VGN_<interface>` filter/NAT chains and are removed on Stop/Delete.
+They are restored by enabled `wg-quick` units on boot and rebuilt without duplicate rules on restart.
+Failures roll back the new rules and fail interface startup. The native UI remains `User=vibeguard`;
+its root-owned systemd helpers perform network administration. Existing unmanaged wg-quick instances
+keep their previous behavior.
+
+Native/LXC configuration is in the root-owned `/etc/vibeguard-network.env` (preserved by `make install`):
+
+| Setting | Default | Behavior |
+|---|---|---|
+| `VIBEGUARD_EGRESS_INTERFACE` | `auto` | Use the default-route uplink for each family, falling back to the other family's uplink. Set e.g. `eth0` explicitly for multi-uplink hosts. |
+| `VIBEGUARD_MANAGE_FIREWALL` | `1` | Set `0` to manage forwarding/firewall rules yourself. IP forwarding remains enabled. |
+| `VIBEGUARD_NAT` | `1` | IPv4 masquerading; set `0` when the upstream router routes the VPN subnet. |
+| `VIBEGUARD_NAT66` | `0` | Set `1` for IPv6 masquerading. |
+
+For example, set `VIBEGUARD_EGRESS_INTERFACE=eth0` in that file, then **restart the VPN interface**
+in the UI to apply changes. Also restart existing VPN interfaces once after upgrading to this
+version; restarting the UI alone does not reconfigure already-running tunnels. The same settings
+are process environment variables in Docker/direct mode. Docker images include the helper at
+`/usr/local/libexec/vibeguard-network`; local direct-mode development can select it using
+`VIBEGUARD_NETWORK_HELPER=./systemd/vibeguard-network` (make the file executable first).
+Direct mode requires `CAP_NET_ADMIN` and the firewall tools.
+
+Verify a running `wg0` on its host/container:
+
+```sh
+sysctl net.ipv4.ip_forward net.ipv6.conf.all.forwarding  # both 1
+sudo iptables -S VGF_wg0
+sudo iptables -t nat -S VGN_wg0                       # IPv4 MASQUERADE
+sudo ip6tables -S VGF_wg0                            # when IPv6 is configured
+```
+
+IPv6 forwarding can disable router-advertisement learning on an uplink. If that interface receives
+its IPv6 default route through RAs, persist `net.ipv6.conf.<uplink>.accept_ra=2` on that host.
+VibeGuard does not provision an IPv6 prefix or change uplink RA settings. Publish/forward each
+WireGuard UDP port through any external firewall/router, and keep the management UI on a trusted
+network or behind HTTPS. Hosts with UFW/firewalld or another firewall manager should either integrate
+these narrowly scoped chains with that manager or set `VIBEGUARD_MANAGE_FIREWALL=0` and provide
+matching rules there; a firewall reload may remove dynamically installed rules.
 
 
 ## Run
@@ -107,7 +155,7 @@ Run `make help` for the full list.
 `make install` copies the binary to `/usr/local/bin` (override with `PREFIX=`/`BINDIR=`) and the unit
 to `/etc/systemd/system`. It also writes `/etc/vibeguard.env` with a random admin password if that
 file doesn't exist yet, enables IPv4/IPv6 forwarding, and enables and restarts the VibeGuard service.
-Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 polkitd`). If `DESTDIR` is set, only the files are staged.
+Install `wireguard-tools`, `iproute2`, and `polkitd` on the host first (Debian/Ubuntu: `sudo apt-get install wireguard-tools iproute2 iptables procps polkitd`). If `DESTDIR` is set, only the files are staged.
 
 **Service user.** `make install` asks which user to run as (default `vibeguard`) and creates it as a
 system user if it doesn't exist. To skip the prompt, e.g. in scripts, pass `VIBEGUARD_USER=<name>`;
@@ -367,8 +415,10 @@ Configuring TUN anyway keeps the container working if you add one later, and
 - `--features nesting=1`: needed for systemd in Debian 12/13 containers to start cleanly (its
   sandboxing features need it). It is not used to run Docker or other containers inside.
 
-**4. IP forwarding.** `net.ipv4.ip_forward` is set per network namespace, so the container sets it
-itself (`/etc/sysctl.d/99-vibeguard.conf`); the host's setting doesn't matter.
+**4. Forwarding and NAT.** IPv4 and IPv6 forwarding are set in the container's network namespace
+via `/etc/sysctl.d/99-vibeguard.conf`. VPN startup installs scoped forwarding and IPv4 masquerade
+rules on its uplink; see [Forwarding and NAT](#forwarding-and-nat) for NAT66 and routed configurations.
+The Proxmox host and upstream router must also permit the container's outbound traffic.
 
 **5. Network.** Publish or forward each service's UDP `ListenPort` to the container's IP, and use the
 container's bridge interface (e.g. `eth0`) for `VIBEGUARD_MDNS_UPSTREAM`.
@@ -396,3 +446,16 @@ On a native systemd test host, additionally verify that Start marks `wg-quick@wg
 Stop makes it inactive and disabled, peer edits reload without losing the interface, and an enabled
 interface returns after reboot with the UI still running as `vibeguard`. Actual tunnel traffic and
 LAN discovery require a WireGuard-capable host and clients.
+
+The networking helper also has an isolated Debian 13 integration check using real firewall tools:
+
+```sh
+docker build -f tests/network/Dockerfile -t vibeguard-network-test .
+docker run --rm --cap-add NET_ADMIN \
+  --sysctl net.ipv4.ip_forward=1 --sysctl net.ipv6.conf.all.forwarding=1 \
+  vibeguard-network-test
+```
+
+The test adds addresses and firewall rules only inside the disposable container's network namespace.
+It checks forwarding rules, IPv4 NAT, optional NAT66, idempotency, and removal while preserving an
+unrelated rule. It does not test a complete WireGuard client tunnel.

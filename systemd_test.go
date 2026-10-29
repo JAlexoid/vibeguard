@@ -24,6 +24,7 @@ func TestPrivilegedHelper(t *testing.T) {
 	// Substitute only filesystem locations in the fixture. The command/action
 	// implementation is the installed script, running with fake wg/ip executables.
 	script := strings.ReplaceAll(string(source), "/var/lib/vibeguard/wireguard", managed)
+	script = strings.ReplaceAll(script, "/usr/local/libexec/vibeguard-network", filepath.Join(dir, "bin", "vibeguard-network"))
 	script = strings.ReplaceAll(script, "/etc/wireguard", host)
 	script = strings.ReplaceAll(script, "/run/vibeguard-wg.", filepath.Join(dir, "reload."))
 	path := filepath.Join(dir, "helper")
@@ -31,10 +32,11 @@ func TestPrivilegedHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := filepath.Join(dir, "calls")
-	for _, name := range []string{"wg-quick", "ip", "wg"} {
+	for _, name := range []string{"wg-quick", "ip", "wg", "vibeguard-network"} {
 		body := "#!/bin/sh\nprintf '%s %s\\n' '" + name + "' \"$*\" >> \"$TEST_CALLS\"\n"
 		if name == "wg-quick" {
 			body += "if [ \"$1\" = strip ]; then echo '[Interface]'; fi\n"
+			body += "if [ \"$1\" = down ] && [ \"${VG_TEST_WG_DOWN_FAIL:-}\" = 1 ]; then exit 1; fi\n"
 		}
 		if err := os.WriteFile(filepath.Join(dir, "bin", name), []byte(body), 0700); err != nil {
 			t.Fatal(err)
@@ -55,11 +57,20 @@ func TestPrivilegedHelper(t *testing.T) {
 	}
 	b, _ := os.ReadFile(log)
 	calls := string(b)
-	for _, want := range []string{"wg-quick up " + managed + "/wg0.conf", "ip link set dev wg0 multicast on", "wg syncconf wg0", "wg-quick down " + managed + "/wg0.conf"} {
+	for _, want := range []string{"wg-quick up " + managed + "/wg0.conf", "ip link set dev wg0 multicast on", "vibeguard-network up wg0", "vibeguard-network down wg0", "wg syncconf wg0", "wg-quick down " + managed + "/wg0.conf"} {
 		if !strings.Contains(calls, want) {
 			t.Fatalf("missing %q in %s", want, calls)
 		}
 	}
+	t.Setenv("VG_TEST_WG_DOWN_FAIL", "1")
+	if err := runHelper("down", "wg0"); err == nil {
+		t.Fatal("expected wg-quick down failure")
+	}
+	failedDown, _ := os.ReadFile(log)
+	if !strings.HasSuffix(string(failedDown), "vibeguard-network down wg0\n") {
+		t.Fatal("wg-quick failure skipped network cleanup", string(failedDown))
+	}
+	t.Setenv("VG_TEST_WG_DOWN_FAIL", "")
 	files, _ := filepath.Glob(filepath.Join(dir, "reload.*"))
 	if len(files) != 0 {
 		t.Fatal("reload left private config behind")
@@ -99,10 +110,12 @@ func TestInstallerRejectsMissingPolkitBeforeWritingFiles(t *testing.T) {
 		t.Skip("make unavailable")
 	}
 	dir := t.TempDir()
-	// Leave only wg-quick on PATH: having WireGuard or policy files alone must
+	// Leave only network tools on PATH: having WireGuard or policy files alone must
 	// not pass the polkit prerequisite check and start modifying the host.
-	if err := os.WriteFile(filepath.Join(dir, "wg-quick"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
+	for _, tool := range []string{"wg-quick", "iptables", "ip6tables", "sysctl"} {
+		if err := os.WriteFile(filepath.Join(dir, tool), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cmd := exec.Command(makePath, "--assume-old=/bin/true", "install", "BINARY=/bin/true")
 	cmd.Env = append(os.Environ(), "PATH="+dir)
@@ -120,7 +133,7 @@ func TestInstallerRequiresRunningPolkit(t *testing.T) {
 	for _, tc := range []struct{ fail, want string }{{"start", "Cannot start polkit.service"}, {"is-active", "polkit.service must be running"}} {
 		t.Run(tc.fail, func(t *testing.T) {
 			dir := t.TempDir()
-			for _, name := range []string{"wg-quick", "pkaction", "pkcheck"} {
+			for _, name := range []string{"wg-quick", "pkaction", "pkcheck", "iptables", "ip6tables", "sysctl"} {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
