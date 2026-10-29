@@ -2,6 +2,8 @@
 
 Simple WireGuard management UI: manage WireGuard services (interfaces), users (peers) and
 generate QR codes for easy client setup. Single admin password, no other accounts.
+Client configuration downloads use `<interface>@<endpoint-host>.conf`, for example
+`wg0@vpn.example.com.conf` (the endpoint port is omitted).
 
 Stack: one Go binary (standard library + `go-qrcode`) serving a REST API and a small
 dependency-free HTML/JS frontend (embedded). Native installs manage `wg-quick@<interface>.service` through systemd and polkit. The UI runs

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,26 @@ func ClientConfig(s Service, u User) string {
 	fmt.Fprintf(&b, "\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s\nEndpoint = %s\nPersistentKeepalive = 25\n",
 		s.PublicKey, u.PresharedKey, u.AllowedIPs, s.Endpoint)
 	return b.String()
+}
+
+// ClientConfigFilename identifies the VPN interface and public endpoint host.
+// Keep names portable across desktop platforms, including IPv6 endpoints.
+func ClientConfigFilename(s Service) string {
+	host, _, err := net.SplitHostPort(s.Endpoint)
+	if err != nil {
+		host = "server"
+	}
+	host = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, host)
+	host = strings.Trim(host, ".-")
+	if host == "" {
+		host = "server"
+	}
+	return s.Name + "@" + host + ".conf"
 }
 
 func QRPNG(content string) ([]byte, error) {
