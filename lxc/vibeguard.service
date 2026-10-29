@@ -1,7 +1,7 @@
 [Unit]
 Description=VibeGuard WireGuard management UI
-Wants=network-online.target polkit.service
-After=network-online.target polkit.service
+Wants=network-online.target polkit.service vibeguard-mdns-firewall.service
+After=network-online.target polkit.service vibeguard-mdns-firewall.service
 
 [Service]
 User=vibeguard

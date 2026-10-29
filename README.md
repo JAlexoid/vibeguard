@@ -57,6 +57,30 @@ Clients need routes for `224.0.0.251/32` and `ff02::fb/128`; full-tunnel routes 
 them. Docker needs host networking so LAN interfaces are visible. A disabled/unavailable address
 family is logged; the other family continues independently.
 
+With managed firewall rules enabled, saving discovery settings also updates **IPv4 and IPv6
+INPUT/OUTPUT rules** for the selected interfaces. INPUT allows UDP destination port 5353;
+OUTPUT allows UDP source/destination port 5353, covering both multicast queries and unicast
+relays. No other UDP ports or unselected interfaces are opened. Deselection or disabling the
+repeater removes its old allowances. These rules are separate from VPN FORWARD/NAT rules.
+
+Native installs use the root-owned `vibeguard-mdns-firewall.service` oneshot, authorized through
+polkit; the UI keeps running as `vibeguard` without NET_ADMIN. The oneshot reads the saved settings,
+restores rules before the UI starts, and clears them when the UI service stops. Docker/direct
+mode uses its existing NET_ADMIN capability and cleans up on graceful shutdown. Install the
+updated unit and polkit rule once with `make install`; subsequent UI changes need no restart.
+A failed firewall update is reported by the settings API instead of silently claiming success.
+`VIBEGUARD_MANAGE_FIREWALL=0` opts out of both gateway and mDNS rule management. After changing
+that flag in the root-owned environment file, save discovery settings again to apply it to mDNS.
+
+Check the mDNS rules on the host/container:
+
+```sh
+sudo iptables -S VGM_INPUT
+sudo iptables -S VGM_OUTPUT
+sudo ip6tables -S VGM_INPUT
+sudo ip6tables -S VGM_OUTPUT
+```
+
 ## Password changes
 
 Use **Settings → Change password**, enter the current password and a new password of at least
@@ -98,7 +122,7 @@ Native/LXC configuration is in the root-owned `/etc/vibeguard-network.env` (pres
 | Setting | Default | Behavior |
 |---|---|---|
 | `VIBEGUARD_EGRESS_INTERFACE` | `auto` | Use the default-route uplink for each family, falling back to the other family's uplink. Set e.g. `eth0` explicitly for multi-uplink hosts. |
-| `VIBEGUARD_MANAGE_FIREWALL` | `1` | Set `0` to manage forwarding/firewall rules yourself. IP forwarding remains enabled. |
+| `VIBEGUARD_MANAGE_FIREWALL` | `1` | Set `0` to manage gateway and mDNS firewall rules yourself. IP forwarding remains enabled. |
 | `VIBEGUARD_NAT` | `1` | IPv4 masquerading; set `0` when the upstream router routes the VPN subnet. |
 | `VIBEGUARD_NAT66` | `0` | Set `1` for IPv6 masquerading. |
 
@@ -457,5 +481,7 @@ docker run --rm --cap-add NET_ADMIN \
 ```
 
 The test adds addresses and firewall rules only inside the disposable container's network namespace.
-It checks forwarding rules, IPv4 NAT, optional NAT66, idempotency, and removal while preserving an
-unrelated rule. It does not test a complete WireGuard client tunnel.
+It checks forwarding rules, IPv4 NAT, optional NAT66, idempotency, and removal while preserving
+unrelated rules. It also sends real IPv4/IPv6 UDP 5353 packets through INPUT/OUTPUT with terminal
+DROP rules and verifies deselection blocks those packets again. It does not test a complete
+WireGuard client tunnel.
